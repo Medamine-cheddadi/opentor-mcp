@@ -18,6 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Reject private local artifacts
+        # assets/*.png is the only deliberate exception: it holds the generated
+        # social preview card. Screenshots anywhere else stay rejected.
         run: |
           tracked="$(git ls-files \
             '.omc/**' \
@@ -31,7 +33,8 @@ jobs:
             'sessions/**' \
             'archives/**' \
             '*.log' \
-            '*.png')"
+            '*.png' \
+            ':(exclude)assets/*.png')"
           if [ -n "$tracked" ]; then
             echo "Private local artifacts must not be tracked:"
             echo "$tracked"
