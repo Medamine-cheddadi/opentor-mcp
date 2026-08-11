@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem with OpenTor MCP
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not include cookies, credentials, private URLs, or sensitive page content. Security vulnerabilities belong in a private advisory.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "0.1.0 or commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - WSL or another environment
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include sanitized commands, tool arguments, and relevant logs.
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Checks already tried
+      placeholder: Tor status, Python version, test result, or MCP client logs
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed credentials, cookies, personal data, and sensitive content.
+          required: true
+        - label: This is not an unpatched security vulnerability.
+          required: true

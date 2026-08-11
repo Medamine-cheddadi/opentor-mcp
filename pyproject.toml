@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opentor-mcp"
+version = "0.1.0"
+description = "Local MCP server for supervised web browsing through Tor"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "El Amine Cheddadi" },
+]
+keywords = ["mcp", "tor", "playwright", "browser-automation", "privacy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Security",
+]
+dependencies = [
+    "mcp>=2.0.0,<3",
+    "mcp-types>=2.0.0,<3",
+    "playwright>=1.62.0,<2",
+    "beautifulsoup4>=4.15.0,<5",
+    "markdownify>=1.2.0,<2",
+    "stem>=1.8.0,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/Medamine-cheddadi/opentor-mcp"
+Repository = "https://github.com/Medamine-cheddadi/opentor-mcp"
+Issues = "https://github.com/Medamine-cheddadi/opentor-mcp/issues"
+Changelog = "https://github.com/Medamine-cheddadi/opentor-mcp/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+ocr = [
+    "ddddocr>=1.6.0,<2",
+]
+tesseract = [
+    "Pillow>=12.0.0,<13",
+    "pytesseract>=0.3.13,<1",
+]
+dev = [
+    "build>=1.3.0,<2",
+    "pip-audit>=2.9.0,<3",
+    "pyright>=1.1.400,<2",
+    "pytest>=9.0.0,<10",
+    "pytest-cov>=7.0.0,<8",
+    "ruff>=0.14.0,<1",
+]
+
+[project.scripts]
+tor-mcp = "tor_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tor_mcp"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.omc",
+    "/content_reader*.py",
+    "/crawler*.py",
+    "/crawl_data*",
+    "/knowledge_base",
+    "/thread_content",
+    "/top*_urls.json",
+    "/accounts.json",
+    "/sessions",
+    "/archives",
+    "/**/*.log",
+    "/**/*.png",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+
+[tool.coverage.run]
+branch = true
+source = ["tor_mcp"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    "content_reader*.py",
+    "crawler*.py",
+    "crawl_data",
+    "crawl_data_v2",
+    "crawl_data_v3",
+    "knowledge_base",
+    "thread_content",
+    "top*_urls.json",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_imports.py" = ["F401"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
