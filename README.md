@@ -98,11 +98,8 @@ flowchart LR
     G -->|allowed| F["Playwright<br/>Firefox"]
     F --> T["Tor SOCKS5<br/>127.0.0.1:9050"]
     T --> W["HTTP(S) sites<br/>.onion services"]
-    G -. rejected .-> X["localhost · private IPs<br/>embedded credentials"]
 
-    classDef blocked fill:#7F1D1D,stroke:#B91C1C,color:#FEE2E2
     classDef exit fill:#0891B2,stroke:#0E7490,color:#FFFFFF
-    class X blocked
     class W exit
 ```
 
