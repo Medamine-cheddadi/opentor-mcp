@@ -1,46 +1,119 @@
-# OpenTor MCP
+<div align="center">
 
-> A local MCP server that gives AI assistants a supervised Firefox session routed through Tor.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.svg">
+  <img src="assets/banner-light.svg" alt="OpenTor MCP — a supervised Firefox session for AI assistants, routed through Tor" width="900">
+</picture>
 
-[![CI](https://github.com/Medamine-cheddadi/opentor-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Medamine-cheddadi/opentor-mcp/actions/workflows/ci.yml)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+<br>
 
-OpenTor MCP connects an MCP-compatible client to Playwright Firefox through a local Tor
-SOCKS5 proxy. It can browse HTTP(S) and `.onion` pages, return readable content and native
-screenshots, extract forum data, preserve sessions, and archive pages for offline review.
+[![CI](https://img.shields.io/github/actions/workflow/status/Medamine-cheddadi/opentor-mcp/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white)](https://github.com/Medamine-cheddadi/opentor-mcp/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-27_tools-7C3AED?style=flat-square)](#tools)
+[![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-D97706?style=flat-square)](#limitations)
+
+**[Quick start](#quick-start)** · **[Connect a client](#connect-an-mcp-client)** · **[Tools](#tools)** · **[Configuration](#configuration)** · **[Security](#security-model)** · **[Contributing](CONTRIBUTING.md)**
+
+</div>
+
+---
+
+OpenTor MCP connects an MCP-compatible client to Playwright Firefox through a local Tor SOCKS5
+proxy. It can browse HTTP(S) and `.onion` pages, return readable content and native screenshots,
+extract forum data, preserve sessions, and archive pages for offline review.
 
 It is designed as a small, local-first side project for supervised research and experimentation.
-It is **not Tor Browser**, does not reproduce Tor Browser's fingerprint, and does not guarantee
-anonymity.
 
-## Why this project?
+> [!WARNING]
+> **This is not Tor Browser.** OpenTor MCP does not reproduce Tor Browser's fingerprint and does not
+> guarantee anonymity. See [Limitations](#limitations) before relying on it for anything sensitive.
 
-- **MCP-native** — 27 focused tools with native image results and safety annotations.
-- **Local-first** — the browser, Tor connection, cookies, archives, and optional OCR stay on your
-  machine.
-- **Useful output** — page markdown, links, metadata, screenshots, forum threads, and posts.
-- **Secure defaults** — JavaScript evaluation and invalid TLS certificates are disabled by default.
-- **Bounded responses** — pagination and output budgets keep large pages from overwhelming clients.
+## Why OpenTor MCP
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### MCP-native
+
+27 focused tools with native image results and safety annotations — screenshots and CAPTCHAs come
+back as real MCP image content, not base64 blobs in a text field.
+
+</td>
+<td width="50%" valign="top">
+
+### Local-first
+
+The browser, Tor connection, cookies, archives, and optional OCR all stay on your machine. Nothing
+is relayed through a third-party service.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Secure by default
+
+JavaScript evaluation and invalid TLS certificates are off unless you explicitly opt in. Every
+request — including redirects — passes a URL policy gate.
+
+</td>
+<td width="50%" valign="top">
+
+### Bounded responses
+
+Pagination and output budgets keep a 4 MB page from flooding your client's context window.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Useful output
+
+Page markdown, links, metadata, screenshots, forum threads, and posts — shaped for a model to read,
+not a human to squint at.
+
+</td>
+<td width="50%" valign="top">
+
+### Session-aware
+
+Cookies save to owner-only local files, archives capture HTML + text + metadata + screenshot, and
+circuits rotate on demand.
+
+</td>
+</tr>
+</table>
 
 ## How it works
 
 ```mermaid
+%%{init: {'theme':'base','fontFamily':'-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif','themeVariables':{'primaryColor':'#7C3AED','primaryTextColor':'#FFFFFF','primaryBorderColor':'#6D28D9','lineColor':'#8B5CF6','edgeLabelBackground':'#4B5563','tertiaryTextColor':'#FFFFFF','fontSize':'15px'}}}%%
 flowchart LR
-    Client["MCP client"] --> Server["OpenTor MCP"]
-    Server --> Firefox["Playwright Firefox"]
-    Firefox --> Proxy["Local Tor SOCKS5 proxy"]
-    Proxy --> Web["HTTP(S) and .onion sites"]
+    C["MCP client"] -->|stdio| S["OpenTor MCP<br/>27 tools"]
+    S --> G{"URL policy<br/>gate"}
+    G -->|allowed| F["Playwright<br/>Firefox"]
+    F --> T["Tor SOCKS5<br/>127.0.0.1:9050"]
+    T --> W["HTTP(S) sites<br/>.onion services"]
+    G -. rejected .-> X["localhost · private IPs<br/>embedded credentials"]
+
+    classDef blocked fill:#7F1D1D,stroke:#B91C1C,color:#FEE2E2
+    classDef exit fill:#0891B2,stroke:#0E7490,color:#FFFFFF
+    class X blocked
+    class W exit
 ```
 
-The MCP server uses one shared browser context and serializes browser operations so concurrent tool
-calls cannot race the active page.
+Every stage before the exit — client, server, policy gate, browser, and Tor proxy — runs on your own
+machine. The server uses one shared browser context and serializes browser operations, so concurrent
+tool calls cannot race the active page.
 
 ## Quick start
 
-OpenTor MCP currently targets macOS and Linux. You need Python 3.11 or newer and `curl`. The
-installer can install and start Tor with Homebrew, `apt`, or `dnf`; it may ask for `sudo` on Linux.
+> **Requirements** — macOS or Linux, Python 3.11+, and `curl`. The installer can install and start
+> Tor with Homebrew, `apt`, or `dnf`; it may ask for `sudo` on Linux.
 
 ```bash
 git clone https://github.com/Medamine-cheddadi/opentor-mcp.git
@@ -59,7 +132,10 @@ To include the heavier `ddddocr` dependency during installation, opt in explicit
 TOR_MCP_INSTALL_OCR=true ./install.sh
 ```
 
-### Manual setup with uv
+<details>
+<summary><strong>Manual setup with uv</strong></summary>
+
+<br>
 
 [Install uv](https://docs.astral.sh/uv/getting-started/installation/) and start Tor first, then run:
 
@@ -82,13 +158,13 @@ sudo apt install tesseract-ocr        # Debian/Ubuntu
 uv sync --locked --extra tesseract
 ```
 
+</details>
+
 ## Connect an MCP client
 
 Use an absolute path to the virtual environment created inside the repository.
 
 ### Claude Code
-
-The official Claude Code CLI can register the stdio server directly:
 
 ```bash
 claude mcp add \
@@ -105,15 +181,14 @@ claude mcp list
 ```
 
 The example uses user scope so the server is available across your Claude Code projects. For a
-narrower setup, use `--scope local` and run the command from each project that should access it.
-
-See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp) for scope and
-configuration options.
+narrower setup, use `--scope local` and run the command from each project that should access it. See
+the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp) for scope and configuration
+options.
 
 ### Generic stdio configuration
 
-Other clients use different configuration files and formats. For clients that accept the common
-JSON `mcpServers` shape, use:
+Other clients use different configuration files and formats. For clients that accept the common JSON
+`mcpServers` shape:
 
 ```json
 {
@@ -133,9 +208,9 @@ JSON `mcpServers` shape, use:
 }
 ```
 
-Restart your MCP client after adding the server. A few safe prompts to try:
+### First prompts
 
-Screenshot and CAPTCHA workflows require a client that can render native MCP image content.
+Restart your MCP client after adding the server, then try:
 
 ```text
 Check whether my browser traffic is using Tor.
@@ -144,12 +219,26 @@ Read the current page and return a short summary with its links.
 Take a screenshot of the current viewport.
 ```
 
-## Tools (27 total)
+Screenshot and CAPTCHA workflows require a client that can render native MCP image content.
+
+## Tools
+
+| Category | Count | What it covers |
+| --- | :---: | --- |
+| **Navigation** | 4 | Move between pages and through history |
+| **Reading** | 6 | Markdown, screenshots, links, metadata, DOM queries |
+| **Interaction** | 5 | Click, type, key press, scroll, optional JS |
+| **Search and extraction** | 3 | Onion search engines and forum extraction |
+| **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
+| **Sessions** | 4 | Save, load, list, and delete cookie jars |
+| **Tor control and archiving** | 3 | New circuit, connection check, page snapshot |
 
 <details>
-<summary><strong>All 27 tools</strong></summary>
+<summary><strong>Tools (27 total) — full reference</strong></summary>
 
-### Navigation
+<br>
+
+#### Navigation
 
 | Tool | Description |
 | --- | --- |
@@ -158,7 +247,7 @@ Take a screenshot of the current viewport.
 | `tor_forward` | Go forward in browser history |
 | `tor_refresh` | Reload the active page |
 
-### Reading
+#### Reading
 
 | Tool | Description |
 | --- | --- |
@@ -169,7 +258,7 @@ Take a screenshot of the current viewport.
 | `tor_get_page_info` | Return page metadata and element counts |
 | `tor_query_elements` | Query DOM elements with a CSS selector |
 
-### Interaction
+#### Interaction
 
 | Tool | Description |
 | --- | --- |
@@ -179,7 +268,7 @@ Take a screenshot of the current viewport.
 | `tor_scroll` | Scroll up, down, to the top, or to the bottom |
 | `tor_evaluate_js` | Evaluate page JavaScript when explicitly enabled |
 
-### Search and extraction
+#### Search and extraction
 
 | Tool | Description |
 | --- | --- |
@@ -187,14 +276,14 @@ Take a screenshot of the current viewport.
 | `tor_extract_threads` | Extract paginated forum thread listings |
 | `tor_extract_posts` | Extract paginated forum posts |
 
-### CAPTCHA assistance
+#### CAPTCHA assistance
 
 | Tool | Description |
 | --- | --- |
 | `tor_get_captcha` | Capture a CAPTCHA for client vision with an optional OCR hint |
 | `tor_solve_captcha` | Attempt local OCR and fill the result when available |
 
-### Sessions
+#### Sessions
 
 | Tool | Description |
 | --- | --- |
@@ -203,7 +292,7 @@ Take a screenshot of the current viewport.
 | `tor_list_sessions` | List saved session metadata without exposing cookie values |
 | `tor_delete_session` | Delete a saved session |
 
-### Tor control and archiving
+#### Tor control and archiving
 
 | Tool | Description |
 | --- | --- |
@@ -216,17 +305,18 @@ Take a screenshot of the current viewport.
 ## CAPTCHA assistance
 
 The primary flow returns a CAPTCHA as native MCP image content so a vision-capable client can read
-it. If installed, `ddddocr` or Tesseract can provide a local hint and optionally fill the answer.
-OCR is best-effort and the image is preserved when OCR fails.
+it. If installed, `ddddocr` or Tesseract can provide a local hint and optionally fill the answer. OCR
+is best-effort, and the image is preserved when OCR fails.
 
-Only use CAPTCHA assistance on services you are authorized to access and in ways permitted by their
-rules. The feature is not intended for bulk bypass or abusive automation.
+> [!IMPORTANT]
+> Only use CAPTCHA assistance on services you are authorized to access and in ways permitted by their
+> rules. The feature is not intended for bulk bypass or abusive automation.
 
 ## Sessions and archives
 
-Saved sessions contain authentication cookies and must be treated as credentials. Session names use
-the strict pattern `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; directories are created with mode `0700` and
-files with mode `0600` on supported systems.
+Saved sessions contain authentication cookies and **must be treated as credentials**. Session names
+use the strict pattern `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; directories are created with mode `0700`
+and files with mode `0600` on supported systems.
 
 ```text
 tor_save_session(name="research-forum")
@@ -252,8 +342,8 @@ offline. Session and archive directories are ignored by Git.
 | `TOR_MAX_IMAGE_BYTES` | `5000000` | Maximum raw screenshot or CAPTCHA size |
 | `TOR_MAX_JSON_FIELD_CHARS` | `4096` | Maximum retained characters in one web-derived JSON field |
 
-Circuit rotation requires an authenticated Tor control port. A minimal cookie-authentication setup
-in `torrc` is:
+Circuit rotation requires an authenticated Tor control port. A minimal cookie-authentication setup in
+`torrc` is:
 
 ```text
 ControlPort 9051
@@ -270,23 +360,23 @@ unavailable, but `tor_new_identity` cannot request a new circuit.
 - Direct navigation accepts only absolute HTTP(S) URLs, so navigation to local files is rejected.
 - The HTTP(S) request gate rejects embedded credentials, localhost, non-ASCII host aliases, and
   private, loopback, reserved, or link-local IP destinations.
-- Page-derived text is labeled as untrusted and JSON responses use an
+- Page-derived text is labeled as untrusted, and JSON responses use an
   `{ "untrusted": true, "data": ... }` envelope.
 - `TOR_ALLOW_JAVASCRIPT` gates the arbitrary `tor_evaluate_js` tool only; JavaScript belonging to
   visited websites remains enabled in Firefox.
 - Invalid TLS certificates require explicit opt-in.
 - Screenshot, text, field, and item budgets constrain MCP response size.
-- Browser operations are serialized and Playwright resources are closed with the MCP lifecycle.
+- Browser operations are serialized, and Playwright resources are closed with the MCP lifecycle.
 
 Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Limitations
 
-- OpenTor MCP uses stock Playwright Firefox through Tor. It is not Tor Browser and does not provide
-  Tor Browser's fingerprinting defenses or anonymity guarantees.
-- The server owns one shared browser context. It is intended for one trusted local operator, not as
-  a multi-user hosted service.
-- Forum extraction is heuristic and site layouts can change without notice.
+- OpenTor MCP uses stock Playwright Firefox through Tor. It is **not Tor Browser** and does not
+  provide Tor Browser's fingerprinting defenses or anonymity guarantees.
+- The server owns one shared browser context. It is intended for one trusted local operator, not as a
+  multi-user hosted service.
+- Forum extraction is heuristic, and site layouts can change without notice.
 - Onion services and bundled search providers may be unavailable or change addresses.
 - To preserve Tor's remote DNS behavior, OpenTor MCP does not resolve public hostnames locally before
   navigation. The request gate rejects literal and browser-normalized local IP forms, not a public
@@ -317,3 +407,8 @@ not use it to access accounts or systems without permission, evade controls, or 
 ## License
 
 Released under the [MIT License](LICENSE).
+
+<div align="center">
+<br>
+<sub>Built for supervised, local-first research. Not affiliated with the Tor Project.</sub>
+</div>

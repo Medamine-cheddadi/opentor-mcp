@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="OpenTor MCP — a supervised Firefox session for AI assistants, routed through Tor">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B0E14"/>
+      <stop offset="55%" stop-color="#10141F"/>
+      <stop offset="100%" stop-color="#181231"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.46" r="0.62">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity="0.26"/>
+      <stop offset="55%" stop-color="#7C3AED" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="scrim" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#0B0E14" stop-opacity="0.92"/>
+      <stop offset="60%" stop-color="#0B0E14" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#0B0E14" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="55%" stop-color="#A78BFA"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#A78BFA"/>
+      <stop offset="100%" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    .sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+  </style>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- layered-routing motif, centred behind the wordmark -->
+  <g transform="translate(640 320)" fill="none" stroke="url(#ring)" stroke-linecap="round">
+    <circle r="288" stroke-opacity="0.10" stroke-width="1.5" stroke-dasharray="2 12"/>
+    <circle r="236" stroke-opacity="0.18" stroke-width="1.5"/>
+    <circle r="184" stroke-opacity="0.26" stroke-width="1.75" stroke-dasharray="60 18"/>
+    <circle r="132" stroke-opacity="0.34" stroke-width="2"/>
+    <circle r="80"  stroke-opacity="0.44" stroke-width="2.25" stroke-dasharray="36 12"/>
+  </g>
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 352 168 L 498 508 L 902 462 L 812 162 L 640 320"
+          stroke="url(#accent)" stroke-opacity="0.42" stroke-width="2.25"/>
+  </g>
+  <g fill="#0B0E14" stroke="url(#accent)" stroke-opacity="0.55" stroke-width="2.25">
+    <circle cx="352" cy="168" r="7"/>
+    <circle cx="498" cy="508" r="7"/>
+    <circle cx="902" cy="462" r="7"/>
+    <circle cx="812" cy="162" r="7"/>
+  </g>
+
+  <!-- readability scrim over the motif -->
+  <ellipse cx="640" cy="322" rx="620" ry="200" fill="url(#scrim)"/>
+
+  <!-- wordmark block -->
+  <text class="mono" x="640" y="238" font-size="16" letter-spacing="4.4" text-anchor="middle" fill="#A78BFA">MODEL CONTEXT PROTOCOL SERVER</text>
+
+  <text class="sans" x="640" y="342" font-size="94" font-weight="700" letter-spacing="-2.4" text-anchor="middle" fill="#E6EDF3">OpenTor<tspan fill="url(#accent)"> MCP</tspan></text>
+
+  <text class="sans" x="640" y="392" font-size="23" text-anchor="middle" fill="#9BA6B4">A supervised Firefox session for AI assistants, routed through Tor.</text>
+
+  <!-- chips -->
+  <g>
+    <rect x="432" y="426" width="96"  height="32" rx="16" fill="#A78BFA" fill-opacity="0.12" stroke="#A78BFA" stroke-opacity="0.38"/>
+    <text class="mono" x="480" y="446.5" font-size="13" text-anchor="middle" fill="#C4B5FD">27 tools</text>
+
+    <rect x="540" y="426" width="176" height="32" rx="16" fill="#22D3EE" fill-opacity="0.10" stroke="#22D3EE" stroke-opacity="0.34"/>
+    <text class="mono" x="628" y="446.5" font-size="13" text-anchor="middle" fill="#7DD3FC">Playwright Firefox</text>
+
+    <rect x="728" y="426" width="120" height="32" rx="16" fill="#FFFFFF" fill-opacity="0.06" stroke="#FFFFFF" stroke-opacity="0.18"/>
+    <text class="mono" x="788" y="446.5" font-size="13" text-anchor="middle" fill="#9BA6B4">local-first</text>
+  </g>
+
+  <text class="mono" x="640" y="566" font-size="15" text-anchor="middle" fill="#6B7280">github.com/Medamine-cheddadi/opentor-mcp</text>
+</svg>

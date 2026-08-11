@@ -93,7 +93,12 @@ def test_open_source_community_files_exist():
 def test_readme_is_ready_for_the_public_repository():
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert readme.startswith("# OpenTor MCP")
+    # The hero block may be a banner rather than a plain heading, but it must still name the
+    # project up front and keep that name reachable without loading images.
+    assert "OpenTor MCP" in readme[:1200]
+    assert re.search(r'<img[^>]*\balt="OpenTor MCP\b', readme), (
+        "the hero banner needs alt text naming the project"
+    )
     assert REPOSITORY_URL in readme
     assert "git clone <this-repo>" not in readme
     assert "/path/to/tor-mcp" not in readme
@@ -101,6 +106,15 @@ def test_readme_is_ready_for_the_public_repository():
     assert "responsible" in readme.lower()
     assert "CONTRIBUTING.md" in readme
     assert "SECURITY.md" in readme
+
+
+def test_readme_local_image_references_resolve():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    referenced = set(re.findall(r'(?:src|srcset)="((?!https?:)[^"]+)"', readme))
+
+    assert referenced, "the README should reference its local branding assets"
+    missing = sorted(path for path in referenced if not (PROJECT_ROOT / path).is_file())
+    assert missing == [], f"README references missing files: {missing}"
 
 
 def test_public_copy_does_not_claim_unsupervised_autonomy():

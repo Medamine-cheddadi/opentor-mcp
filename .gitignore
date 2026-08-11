@@ -9,6 +9,7 @@ htmlcov/
 .omc/
 content_reader*.py
 crawler*.py
+auth_rescrape.py
 crawl_data*/
 knowledge_base/
 thread_content/
@@ -26,3 +27,4 @@ archives/
 !.env.example
 *.log
 *.png
+!assets/*.png

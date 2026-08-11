@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" role="img" aria-label="OpenTor MCP — a supervised Firefox session for AI assistants, routed through Tor">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F7F8FC"/>
+      <stop offset="100%" stop-color="#F1EDFB"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.79" cy="0.5" r="0.55">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.13"/>
+      <stop offset="55%" stop-color="#7C3AED" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0891B2"/>
+      <stop offset="55%" stop-color="#7C3AED"/>
+      <stop offset="100%" stop-color="#6D28D9"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7C3AED"/>
+      <stop offset="100%" stop-color="#0891B2"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    .sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+  </style>
+
+  <rect width="1280" height="340" fill="url(#bg)"/>
+  <rect width="1280" height="340" fill="url(#glow)"/>
+
+  <!-- layered-routing motif -->
+  <g transform="translate(1010 170)" fill="none" stroke="url(#ring)" stroke-linecap="round">
+    <circle r="150" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="2 10"/>
+    <circle r="122" stroke-opacity="0.30" stroke-width="1.5"/>
+    <circle r="94"  stroke-opacity="0.45" stroke-width="1.75" stroke-dasharray="46 14"/>
+    <circle r="66"  stroke-opacity="0.62" stroke-width="2"/>
+    <circle r="38"  stroke-opacity="0.88" stroke-width="2.25" stroke-dasharray="30 10"/>
+  </g>
+
+  <!-- circuit hopping inward through the layers -->
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 742 145 H 862" stroke="#0891B2" stroke-opacity="0.40" stroke-width="1.5" stroke-dasharray="4 7"/>
+    <path d="M 862 145 L 968 285 L 1098 202 L 1032 108 L 1010 170"
+          stroke="url(#accent)" stroke-opacity="0.95" stroke-width="2.25"/>
+  </g>
+  <g fill="#FFFFFF" stroke="url(#accent)" stroke-width="2.25">
+    <circle cx="862"  cy="145" r="6.5"/>
+    <circle cx="968"  cy="285" r="6.5"/>
+    <circle cx="1098" cy="202" r="6.5"/>
+    <circle cx="1032" cy="108" r="6.5"/>
+  </g>
+  <circle cx="1010" cy="170" r="9" fill="#0891B2"/>
+  <circle cx="1010" cy="170" r="17" fill="none" stroke="#0891B2" stroke-opacity="0.35" stroke-width="1.5"/>
+
+  <!-- wordmark -->
+  <text class="mono" x="80" y="112" font-size="13" letter-spacing="3.4" fill="#7C3AED">MODEL CONTEXT PROTOCOL SERVER</text>
+  <rect x="80" y="126" width="360" height="1.5" fill="url(#rule)"/>
+
+  <text class="sans" x="80" y="196" font-size="66" font-weight="700" letter-spacing="-1.6" fill="#0D1117">OpenTor<tspan fill="url(#accent)"> MCP</tspan></text>
+
+  <text class="sans" x="80" y="234" font-size="19" fill="#57606A">A supervised Firefox session for AI assistants, routed through Tor.</text>
+
+  <!-- chips -->
+  <g>
+    <rect x="80"  y="262" width="96"  height="30" rx="15" fill="#7C3AED" fill-opacity="0.08" stroke="#7C3AED" stroke-opacity="0.30"/>
+    <text class="mono" x="128" y="281" font-size="12.5" text-anchor="middle" fill="#6D28D9">27 tools</text>
+
+    <rect x="188" y="262" width="176" height="30" rx="15" fill="#0891B2" fill-opacity="0.07" stroke="#0891B2" stroke-opacity="0.28"/>
+    <text class="mono" x="276" y="281" font-size="12.5" text-anchor="middle" fill="#0E7490">Playwright Firefox</text>
+
+    <rect x="376" y="262" width="120" height="30" rx="15" fill="#0D1117" fill-opacity="0.04" stroke="#0D1117" stroke-opacity="0.14"/>
+    <text class="mono" x="436" y="281" font-size="12.5" text-anchor="middle" fill="#57606A">local-first</text>
+  </g>
+</svg>
