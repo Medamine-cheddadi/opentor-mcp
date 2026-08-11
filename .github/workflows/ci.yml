@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject private local artifacts
+        run: |
+          tracked="$(git ls-files \
+            '.omc/**' \
+            'content_reader*.py' \
+            'crawler*.py' \
+            'crawl_data*/**' \
+            'knowledge_base/**' \
+            'thread_content/**' \
+            'top*_urls.json' \
+            'sessions/**' \
+            'archives/**' \
+            '*.log' \
+            '*.png')"
+          if [ -n "$tracked" ]; then
+            echo "Private local artifacts must not be tracked:"
+            echo "$tracked"
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Sync locked environment
+        run: uv sync --locked --extra dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run pyright
+      - name: Test with coverage
+        run: uv run pytest --cov=tor_mcp --cov-report=term-missing
+      - name: Build package
+        run: uv run python -m build
+      - name: Verify release artifacts exclude local crawl data
+        run: |
+          uv run python - <<'PY'
+          import tarfile
+          from pathlib import Path
+
+          archive = next(Path("dist").glob("*.tar.gz"))
+          forbidden_directories = (
+              "crawl_data",
+              "knowledge_base",
+              "thread_content",
+              ".omc",
+          )
+          forbidden_file_prefixes = ("crawler", "content_reader", "top")
+          with tarfile.open(archive) as source:
+              paths = source.getnames()
+          hits = [
+              path
+              for path in paths
+              if any(marker in Path(path).parts for marker in forbidden_directories)
+              or Path(path).name.startswith(forbidden_file_prefixes)
+          ]
+          assert not hits, hits
+          PY
+      - name: Audit dependencies
+        run: uv run pip-audit

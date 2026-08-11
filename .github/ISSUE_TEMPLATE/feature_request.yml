@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a focused improvement for OpenTor MCP
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Explain the smallest useful solution and any MCP API changes.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and privacy impact
+      description: Consider URLs, browser state, cookies, local files, response size, and untrusted content.
+    validations:
+      required: true
+  - type: checkboxes
+    id: responsible_use
+    attributes:
+      label: Responsible use
+      options:
+        - label: This request supports a lawful, authorized use case.
+          required: true
