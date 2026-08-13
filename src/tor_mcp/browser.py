@@ -21,6 +21,8 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from tor_mcp.errors import classify_error
+
 logger = logging.getLogger("tor-mcp.browser")
 
 # A stable viewport reduces accidental variation without claiming Tor Browser parity.
@@ -238,7 +240,12 @@ class TorBrowser:
                 "status": response.status if response else None,
             }
         except Exception as e:
-            return {"url": url, "title": None, "status": None, "error": str(e)}
+            return {
+                "url": url,
+                "title": None,
+                "status": None,
+                "error": classify_error(e),
+            }
 
     async def go_back(self) -> dict:
         await self.ensure_launched()

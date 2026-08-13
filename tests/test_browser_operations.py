@@ -154,7 +154,11 @@ def test_navigation_handles_no_response_and_page_errors(browser):
     assert run(browser.navigate("https://example.com/no-response"))["status"] is None
 
     result = run(browser.navigate("https://example.com/error"))
-    assert result["error"] == "navigation failed"
+    error = result["error"]
+    assert error["message"] == "navigation failed"
+    assert error["category"] == "transient"
+    assert error["suggestion"]
+    assert error["retryable"] is True
     assert result["status"] is None
 
 
