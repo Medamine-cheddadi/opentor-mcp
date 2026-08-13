@@ -146,6 +146,7 @@ class TorBrowser:
         ignore_https_errors: bool = False,
         tor_control_password: str | None = None,
         compatibility_mode: bool = False,
+        max_tabs: int = 5,
     ):
         self.tor_socks_port = tor_socks_port
         self.tor_control_port = tor_control_port
@@ -153,6 +154,7 @@ class TorBrowser:
         self.ignore_https_errors = ignore_https_errors
         self.tor_control_password = tor_control_password
         self.compatibility_mode = compatibility_mode
+        self._max_tabs = max(1, max_tabs)
         self.archives_dir = archives_dir or Path("archives")
         self.archives_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.archives_dir.chmod(0o700)
@@ -160,22 +162,97 @@ class TorBrowser:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        self._page: Page | None = None
+        self._tabs: dict[str, Page] = {}
+        self._active_tab: str = "main"
         self._launched = False
         self._launch_lock = asyncio.Lock()
-        self.operation_lock = asyncio.Lock()
 
     @property
     def page(self) -> Page:
-        if not self._page:
-            raise RuntimeError("Browser not launched. Call launch() first.")
-        return self._page
+        """Return the active tab's page for backward compatibility."""
+        return self.get_page()
 
     @property
     def context(self) -> BrowserContext:
         if not self._context:
             raise RuntimeError("Browser not launched. Call launch() first.")
         return self._context
+
+    def get_page(self, tab_id: str | None = None) -> Page:
+        """Return the Page for *tab_id*, defaulting to the active tab.
+
+        Raises ``RuntimeError`` if the browser is not launched, or
+        ``ValueError`` if the requested tab does not exist.
+        """
+        if not self._tabs:
+            raise RuntimeError("Browser not launched. Call launch() first.")
+        target = tab_id or self._active_tab
+        page = self._tabs.get(target)
+        if page is None:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{target}' does not exist. Available tabs: {available}"
+            )
+        return page
+
+    async def open_tab(self, tab_id: str) -> Page:
+        """Create a new tab and set it as the active tab.
+
+        Raises ``ValueError`` for invalid or duplicate tab IDs, or when
+        the tab limit has been reached.
+        """
+        validate_storage_name(tab_id, kind="tab ID")
+        if tab_id in self._tabs:
+            raise ValueError(f"Tab '{tab_id}' already exists.")
+        if len(self._tabs) >= self._max_tabs:
+            raise ValueError(
+                f"Tab limit reached ({self._max_tabs}). "
+                "Close an existing tab before opening a new one."
+            )
+        await self.ensure_launched()
+        page = await self.context.new_page()
+        self._tabs[tab_id] = page
+        self._active_tab = tab_id
+        return page
+
+    async def close_tab(self, tab_id: str) -> str:
+        """Close a tab and remove it from the registry.
+
+        Cannot close the last remaining tab.  If the closed tab was the
+        active tab, the active tab switches to an arbitrary remaining tab.
+        """
+        if tab_id not in self._tabs:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+            )
+        if len(self._tabs) <= 1:
+            raise ValueError("Cannot close the last remaining tab.")
+        page = self._tabs.pop(tab_id)
+        await page.close()
+        if self._active_tab == tab_id:
+            self._active_tab = next(iter(self._tabs))
+        return f"Tab '{tab_id}' closed."
+
+    def switch_tab(self, tab_id: str) -> str:
+        """Set *tab_id* as the active tab."""
+        if tab_id not in self._tabs:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+            )
+        self._active_tab = tab_id
+        return f"Switched to tab '{tab_id}'."
+
+    def list_tabs(self) -> dict[str, dict]:
+        """Return metadata for every open tab."""
+        result: dict[str, dict] = {}
+        for tid, pg in self._tabs.items():
+            result[tid] = {
+                "url": pg.url,
+                "is_active": tid == self._active_tab,
+            }
+        return result
 
     async def launch(self) -> None:
         """Launch privacy-oriented Firefox routed through Tor."""
@@ -205,7 +282,9 @@ class TorBrowser:
                     ignore_https_errors=self.ignore_https_errors,
                 )
                 await self._context.route("**/*", self._guard_navigation_request)
-                self._page = await self._context.new_page()
+                main_page = await self._context.new_page()
+                self._tabs = {"main": main_page}
+                self._active_tab = "main"
                 self._launched = True
                 logger.info(
                     "Firefox launched through Tor (socks5://127.0.0.1:%d)",
@@ -696,7 +775,8 @@ class TorBrowser:
     async def _cleanup_resources(self) -> None:
         """Close any fully or partially initialized Playwright resources."""
         context, browser, playwright = self._context, self._browser, self._playwright
-        self._page = None
+        self._tabs = {}
+        self._active_tab = "main"
         self._context = None
         self._browser = None
         self._playwright = None

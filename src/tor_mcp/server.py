@@ -49,6 +49,7 @@ MAX_IMAGE_BYTES = max(1, int(os.environ.get("TOR_MAX_IMAGE_BYTES", "5000000")))
 MAX_JSON_FIELD_CHARS = max(1, int(os.environ.get("TOR_MAX_JSON_FIELD_CHARS", "4096")))
 TOR_MAX_RETRIES = max(0, int(os.environ.get("TOR_MAX_RETRIES", "2")))
 TOR_RETRY_BACKOFF = max(0.0, float(os.environ.get("TOR_RETRY_BACKOFF", "2.0")))
+TOR_MAX_TABS = max(1, int(os.environ.get("TOR_MAX_TABS", "5")))
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -78,6 +79,7 @@ def get_browser() -> TorBrowser:
             ignore_https_errors=IGNORE_HTTPS_ERRORS,
             tor_control_password=TOR_CONTROL_PASSWORD,
             compatibility_mode=COMPATIBILITY_MODE,
+            max_tabs=TOR_MAX_TABS,
         )
     return _browser
 

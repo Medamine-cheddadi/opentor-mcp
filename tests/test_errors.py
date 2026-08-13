@@ -329,7 +329,8 @@ def nav_browser(tmp_path):
 
     instance = TorBrowser(archives_dir=tmp_path / "archives")
     instance._launched = True
-    instance._page = FakePage()
+    instance._tabs = {"main": FakePage()}
+    instance._active_tab = "main"
     instance._context = FakeContext()
     return instance
 
