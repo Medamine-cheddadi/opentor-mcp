@@ -19,6 +19,7 @@ from mcp_types import CallToolResult, ContentBlock, ImageContent, TextContent, T
 
 from tor_mcp.browser import TorBrowser
 from tor_mcp.captcha import CaptchaSolver
+from tor_mcp.errors import TRANSIENT, structured_error
 from tor_mcp.extraction import (
     extract_forum_posts,
     extract_forum_threads,
@@ -36,6 +37,7 @@ TOR_CONTROL_PORT = int(os.environ.get("TOR_CONTROL_PORT", "9051"))
 HEADLESS = os.environ.get("TOR_HEADLESS", "true").lower() == "true"
 IGNORE_HTTPS_ERRORS = os.environ.get("TOR_IGNORE_HTTPS_ERRORS", "false").lower() == "true"
 ALLOW_JAVASCRIPT = os.environ.get("TOR_ALLOW_JAVASCRIPT", "false").lower() == "true"
+COMPATIBILITY_MODE = os.environ.get("TOR_COMPATIBILITY_MODE", "false").lower() == "true"
 TOR_CONTROL_PASSWORD = os.environ.get("TOR_CONTROL_PASSWORD") or None
 BASE_DIR = Path(os.environ.get("TOR_MCP_DIR", Path.cwd()))
 SESSIONS_DIR = BASE_DIR / "sessions"
@@ -72,6 +74,7 @@ def get_browser() -> TorBrowser:
             archives_dir=ARCHIVES_DIR,
             ignore_https_errors=IGNORE_HTTPS_ERRORS,
             tor_control_password=TOR_CONTROL_PASSWORD,
+            compatibility_mode=COMPATIBILITY_MODE,
         )
     return _browser
 
@@ -256,8 +259,15 @@ DESTRUCTIVE_LOCAL = ToolAnnotations(
 
 @mcp.tool(description="Navigate to an HTTP(S) URL (.onion supported).", annotations=NAVIGATE_OPEN)
 @serialized_browser_tool
-async def tor_navigate(url: str, timeout: int = 60000) -> str:
-    result = await get_browser().navigate(url, timeout)
+async def tor_navigate(
+    url: str,
+    timeout: int = 60000,
+    wait_strategy: str = "standard",
+    wait_selector: str | None = None,
+) -> str:
+    result = await get_browser().navigate(
+        url, timeout, wait_strategy=wait_strategy, wait_selector=wait_selector,
+    )
     if "error" in result:
         error_response = {**result["error"], "url": result.get("url")}
         return _error_result(error_response)
@@ -380,6 +390,26 @@ async def tor_press_key(key: str) -> str:
 @serialized_browser_tool
 async def tor_scroll(direction: str = "down", amount: int = 500) -> str:
     return await get_browser().scroll(direction, amount)
+
+
+@mcp.tool(
+    description="Wait for a CSS selector to appear on the current page.",
+    annotations=READ_ONLY_OPEN,
+)
+@serialized_browser_tool
+async def tor_wait_for(selector: str, timeout: int = 10000) -> str:
+    found = await get_browser().wait_for(selector, timeout)
+    if found:
+        return _json_result({"found": True, "selector": selector})
+    return _error_result(
+        structured_error(
+            TRANSIENT,
+            f"Selector '{selector}' not found within {timeout}ms.",
+            "Increase the timeout or verify the CSS selector matches "
+            "an element on the page.",
+            retryable=True,
+        )
+    )
 
 
 @mcp.tool(

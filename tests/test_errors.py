@@ -362,7 +362,7 @@ def test_server_tor_navigate_formats_structured_error(monkeypatch):
     import tor_mcp.server as server
 
     class ErrorBrowser:
-        async def navigate(self, url, timeout):
+        async def navigate(self, url, timeout, **kwargs):
             return {
                 "url": url,
                 "title": None,
@@ -391,7 +391,7 @@ def test_server_tor_navigate_success_still_wraps_untrusted(monkeypatch):
     import tor_mcp.server as server
 
     class SuccessBrowser:
-        async def navigate(self, url, timeout):
+        async def navigate(self, url, timeout, **kwargs):
             return {"url": url, "title": "OK", "status": 200}
 
     monkeypatch.setattr(server, "get_browser", lambda: SuccessBrowser())

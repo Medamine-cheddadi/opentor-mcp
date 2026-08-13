@@ -269,3 +269,74 @@ def test_archive_page_writes_complete_owner_private_snapshot(browser):
     assert (archive / "screenshot.png").read_bytes() == b"page-png"
     assert json.loads((archive / "metadata.json").read_text())["title"] == "Example"
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in archive.iterdir())
+
+
+# ── Wait strategy tests ────────────────────────────────────────────
+
+
+def test_navigate_default_strategy_uses_networkidle(browser):
+    result = run(browser.navigate("https://example.com/page"))
+
+    goto_events = [e for e in browser.page.events if e[0] == "goto"]
+    timeout_events = [e for e in browser.page.events if e[0] == "timeout"]
+
+    assert result["status"] == 204
+    assert goto_events[0][2]["wait_until"] == "networkidle"
+    # networkidle already waits for network to settle — no extra sleep
+    assert timeout_events == []
+
+
+def test_navigate_fast_strategy_uses_domcontentloaded(browser):
+    result = run(browser.navigate("https://example.com/page", wait_strategy="fast"))
+
+    goto_events = [e for e in browser.page.events if e[0] == "goto"]
+    timeout_events = [e for e in browser.page.events if e[0] == "timeout"]
+
+    assert result["status"] == 204
+    assert goto_events[0][2]["wait_until"] == "domcontentloaded"
+    assert timeout_events == []
+
+
+def test_navigate_full_strategy_waits_for_selector(browser):
+    result = run(
+        browser.navigate(
+            "https://example.com/page",
+            wait_strategy="full",
+            wait_selector="#content",
+        )
+    )
+
+    goto_events = [e for e in browser.page.events if e[0] == "goto"]
+    wait_events = [e for e in browser.page.events if e[0] == "wait"]
+
+    assert result["status"] == 204
+    assert "error" not in result
+    assert goto_events[0][2]["wait_until"] == "networkidle"
+    assert wait_events[0][1] == "#content"
+
+
+def test_navigate_full_strategy_selector_timeout_returns_error(browser):
+    browser.page.wait_error = TimeoutError("selector never appeared")
+
+    result = run(
+        browser.navigate(
+            "https://example.com/page",
+            wait_strategy="full",
+            wait_selector="#missing",
+        )
+    )
+
+    assert result["error"]["category"] == "transient"
+    assert result["error"]["retryable"] is True
+    assert "#missing" in result["error"]["message"]
+    # Navigation itself succeeded — we still have a status and URL
+    assert result["status"] == 204
+    assert result["url"] == "https://example.com/page"
+
+
+def test_compatibility_mode_relaxes_stealth_prefs(tmp_path):
+    browser = TorBrowser(archives_dir=tmp_path / "archives", compatibility_mode=True)
+    assert browser.compatibility_mode is True
+
+    browser_default = TorBrowser(archives_dir=tmp_path / "archives2")
+    assert browser_default.compatibility_mode is False

@@ -18,7 +18,7 @@ class Browser:
         self.events = []
         self.cookies = [{"name": "sid", "value": "value"}]
 
-    async def navigate(self, url, timeout):
+    async def navigate(self, url, timeout, **kwargs):
         self.events.append(("navigate", url, timeout))
         return {"url": url, "status": 200}
 

@@ -21,7 +21,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
-from tor_mcp.errors import classify_error
+from tor_mcp.errors import TRANSIENT, classify_error, structured_error
 
 logger = logging.getLogger("tor-mcp.browser")
 
@@ -145,12 +145,14 @@ class TorBrowser:
         archives_dir: Path | None = None,
         ignore_https_errors: bool = False,
         tor_control_password: str | None = None,
+        compatibility_mode: bool = False,
     ):
         self.tor_socks_port = tor_socks_port
         self.tor_control_port = tor_control_port
         self.headless = headless
         self.ignore_https_errors = ignore_https_errors
         self.tor_control_password = tor_control_password
+        self.compatibility_mode = compatibility_mode
         self.archives_dir = archives_dir or Path("archives")
         self.archives_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.archives_dir.chmod(0o700)
@@ -181,10 +183,19 @@ class TorBrowser:
             if self._launched:
                 return
             try:
+                prefs = dict(STEALTH_PREFS)
+                if self.compatibility_mode:
+                    # Relax prefs that break JS-heavy sites while keeping
+                    # core privacy controls intact.  Service workers are
+                    # required by many SPAs; canvas read is needed by sites
+                    # that render to <canvas> for layout or verification.
+                    prefs["dom.serviceWorkers.enabled"] = True
+                    prefs["privacy.canvas.read.enabled"] = True
+
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.firefox.launch(
                     headless=self.headless,
-                    firefox_user_prefs=STEALTH_PREFS,
+                    firefox_user_prefs=prefs,
                 )
                 self._context = await self._browser.new_context(
                     proxy={"server": f"socks5://127.0.0.1:{self.tor_socks_port}"},
@@ -227,13 +238,53 @@ class TorBrowser:
 
     # ── Navigation ──────────────────────────────────────────────
 
-    async def navigate(self, url: str, timeout: int = 60000) -> dict:
-        """Navigate to a URL. Returns page info."""
+    async def navigate(
+        self,
+        url: str,
+        timeout: int = 60000,
+        wait_strategy: str = "standard",
+        wait_selector: str | None = None,
+    ) -> dict:
+        """Navigate to a URL with configurable wait behaviour.
+
+        *wait_strategy* controls how long the browser waits after issuing
+        the navigation request:
+
+        * ``"fast"``     — waits for ``domcontentloaded`` only.
+        * ``"standard"`` — waits for ``networkidle`` (default).
+        * ``"full"``     — waits for ``networkidle`` **and** for
+          *wait_selector* to appear in the DOM.
+        """
         validate_navigation_url(url)
         await self.ensure_launched()
+
+        wait_until = "domcontentloaded" if wait_strategy == "fast" else "networkidle"
+
         try:
-            response = await self.page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-            await self.page.wait_for_timeout(1000)  # Let JS settle
+            response = await self.page.goto(
+                url, timeout=timeout, wait_until=wait_until,
+            )
+
+            if wait_strategy == "full" and wait_selector:
+                try:
+                    await self.page.wait_for_selector(
+                        wait_selector, timeout=timeout,
+                    )
+                except Exception:
+                    return {
+                        "url": self.page.url,
+                        "title": await self.page.title(),
+                        "status": response.status if response else None,
+                        "error": structured_error(
+                            TRANSIENT,
+                            f"Page loaded but the selector '{wait_selector}' "
+                            f"did not appear within {timeout}ms.",
+                            "Try increasing the timeout or verify the CSS "
+                            "selector is correct for the loaded page.",
+                            retryable=True,
+                        ),
+                    }
+
             return {
                 "url": self.page.url,
                 "title": await self.page.title(),
