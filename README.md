@@ -224,14 +224,14 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | --- | :---: | --- |
 | **Navigation** | 4 | Move between pages and through history |
 | **Reading** | 6 | Markdown, screenshots, links, metadata, DOM queries |
-| **Interaction** | 5 | Click, type, key press, scroll, optional JS |
+| **Interaction** | 6 | Click, type, key press, scroll, element wait, optional JS |
 | **Search and extraction** | 3 | Onion search engines and forum extraction |
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
 | **Tor control and archiving** | 3 | New circuit, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (27 total) — full reference</strong></summary>
+<summary><strong>Tools (29 total) — full reference</strong></summary>
 
 <br>
 
@@ -263,6 +263,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_type` | Clear and type into an input |
 | `tor_press_key` | Press a keyboard key |
 | `tor_scroll` | Scroll up, down, to the top, or to the bottom |
+| `tor_wait_for` | Wait for a CSS selector to appear on the current page |
 | `tor_evaluate_js` | Evaluate page JavaScript when explicitly enabled |
 
 #### Search and extraction
@@ -294,6 +295,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | Tool | Description |
 | --- | --- |
 | `tor_new_identity` | Request a new Tor circuit and clear browser cookies |
+| `tor_rotate_circuit` | Rotate the Tor circuit without clearing cookies (preserves sessions) |
 | `tor_check_connection` | Check the Tor exit IP without replacing the active page |
 | `tor_archive_page` | Save a private page snapshot beneath the configured archive root |
 
@@ -334,6 +336,7 @@ offline. Session and archive directories are ignored by Git.
 | `TOR_MCP_DIR` | current directory | Base directory for private sessions and archives |
 | `TOR_ALLOW_JAVASCRIPT` | `false` | Enable the high-risk `tor_evaluate_js` tool |
 | `TOR_IGNORE_HTTPS_ERRORS` | `false` | Accept invalid TLS certificates for every destination |
+| `TOR_COMPATIBILITY_MODE` | `false` | Relax select stealth prefs (service workers, canvas read) for JS-heavy sites |
 | `TOR_MAX_RESPONSE_CHARS` | `50000` | Maximum characters returned by a text tool |
 | `TOR_MAX_ITEM_LIMIT` | `100` | Maximum items returned by paginated tools |
 | `TOR_MAX_IMAGE_BYTES` | `5000000` | Maximum raw screenshot or CAPTCHA size |

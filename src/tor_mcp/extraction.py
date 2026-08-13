@@ -1,28 +1,317 @@
 """Content extraction utilities — HTML to markdown, forum thread/post parsing."""
 
+from __future__ import annotations
+
 import logging
 import re
+from typing import TypedDict
 
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger("tor-mcp.extraction")
 
+# ── Quality scoring ────────────────────────────────────────────
 
-def html_to_markdown(html: str, base_url: str = "") -> str:
-    """Convert HTML to clean readable markdown."""
+# Thresholds for quality classification
+_GOOD_THRESHOLD = 0.6
+_FAIR_THRESHOLD = 0.3
+
+
+class ExtractionResult(TypedDict):
+    """Result produced by the extraction fallback chain."""
+
+    content: str
+    quality: str  # "good" | "fair" | "poor"
+    strategy: str  # which strategy produced this result
+    quality_warning: str | None  # set when quality is "poor"
+
+
+def score_quality(text: str, html: str = "") -> float:
+    """Score extracted text quality on a 0.0–1.0 scale.
+
+    Heuristic based on:
+    - Character count (longer meaningful text scores higher)
+    - Structural element count (headings, lists, links in the text)
+    - Content-to-boilerplate ratio (script/style bytes vs total HTML bytes)
+    """
+    if not text or not text.strip():
+        return 0.0
+
+    stripped = text.strip()
+
+    # --- Character count component (0.0–0.4) ---
+    char_count = len(stripped)
+    if char_count > 500:
+        char_score = 0.4
+    elif char_count > 100:
+        char_score = 0.2 + 0.2 * (char_count - 100) / 400
+    elif char_count > 20:
+        char_score = 0.05 + 0.15 * (char_count - 20) / 80
+    else:
+        char_score = 0.05 * char_count / 20
+
+    # --- Structural element count component (0.0–0.3) ---
+    heading_count = len(re.findall(r"^#{1,6}\s", stripped, re.MULTILINE))
+    list_count = len(re.findall(r"^[\s]*[-*+]\s", stripped, re.MULTILINE))
+    link_count = len(re.findall(r"\[.*?\]\(.*?\)", stripped))
+    structure_total = heading_count + list_count + link_count
+    if structure_total >= 5:
+        structure_score = 0.3
+    elif structure_total >= 2:
+        structure_score = 0.15 + 0.15 * (structure_total - 2) / 3
+    elif structure_total >= 1:
+        structure_score = 0.1
+    else:
+        structure_score = 0.0
+
+    # --- Content-to-boilerplate ratio component (0.0–0.3) ---
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        boilerplate_len = sum(
+            len(tag.get_text()) for tag in soup.find_all(["script", "style"])
+        )
+        total_text_len = len(soup.get_text())
+        if total_text_len > 0:
+            content_ratio = 1.0 - (boilerplate_len / total_text_len)
+            ratio_score = 0.3 * max(0.0, content_ratio)
+        else:
+            ratio_score = 0.0
+    else:
+        # Without HTML context, give partial credit
+        ratio_score = 0.15
+
+    return min(1.0, char_score + structure_score + ratio_score)
+
+
+def _classify_quality(score: float) -> str:
+    """Map a numeric score to a quality label."""
+    if score >= _GOOD_THRESHOLD:
+        return "good"
+    if score >= _FAIR_THRESHOLD:
+        return "fair"
+    return "poor"
+
+
+# ── Extraction strategies ──────────────────────────────────────
+
+
+def _markdownify_strategy(html: str) -> str:
+    """Primary strategy: convert HTML to markdown using markdownify."""
     try:
         from markdownify import markdownify as md
 
-        result = md(html, heading_style="ATX", bullets="-", strip=["script", "style", "nav"])
+        result = md(
+            html,
+            heading_style="ATX",
+            bullets="-",
+            strip=["script", "style", "nav"],
+        )
         # Clean up excessive whitespace
         result = re.sub(r"\n{3,}", "\n\n", result)
         return result.strip()
     except ImportError:
-        # Fallback: just extract text
-        soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(["script", "style", "nav"]):
-            tag.decompose()
-        return soup.get_text(separator="\n", strip=True)
+        return ""
+
+
+def _beautifulsoup_strategy(html: str) -> str:
+    """Secondary strategy: structured text extraction via BeautifulSoup."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove boilerplate
+    for tag in soup(["script", "style", "nav"]):
+        tag.decompose()
+
+    parts: list[str] = []
+
+    # Extract headings with markdown formatting
+    for heading in soup.find_all(re.compile(r"^h[1-6]$")):
+        level = int(heading.name[1])
+        text = heading.get_text(strip=True)
+        if text:
+            parts.append(f"{'#' * level} {text}")
+
+    # Extract images with alt text
+    for img in soup.find_all("img"):
+        alt = img.get("alt", "").strip()
+        src = img.get("src", "").strip()
+        if alt:
+            parts.append(f"![{alt}]({src})" if src else f"[Image: {alt}]")
+
+    # Extract tables
+    for table in soup.find_all("table"):
+        table_md = _table_to_markdown(table)
+        if table_md:
+            parts.append(table_md)
+
+    # Extract lists
+    for list_tag in soup.find_all(["ul", "ol"], recursive=True):
+        # Skip nested lists — they are handled by their parent
+        if list_tag.find_parent(["ul", "ol"]):
+            continue
+        list_md = _list_to_markdown(list_tag, indent=0)
+        if list_md:
+            parts.append(list_md)
+
+    # Extract remaining paragraph text
+    for p in soup.find_all("p"):
+        text = p.get_text(strip=True)
+        if text and len(text) > 5:
+            parts.append(text)
+
+    return "\n\n".join(parts).strip()
+
+
+def _raw_text_strategy(html: str) -> str:
+    """Terminal strategy: plain text extraction."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "nav"]):
+        tag.decompose()
+    return soup.get_text(separator="\n", strip=True)
+
+
+def _table_to_markdown(table) -> str:
+    """Convert an HTML table element to markdown table format."""
+    rows = table.find_all("tr")
+    if not rows:
+        return ""
+
+    md_rows: list[str] = []
+    for row in rows:
+        cells = row.find_all(["th", "td"])
+        cell_texts = [cell.get_text(strip=True).replace("|", "\\|") for cell in cells]
+        if cell_texts:
+            md_rows.append("| " + " | ".join(cell_texts) + " |")
+            # Add separator after header row (first row with <th>)
+            if row.find("th") and len(md_rows) == 1:
+                md_rows.append("| " + " | ".join("---" for _ in cell_texts) + " |")
+
+    # If no header separator was added and we have rows, add one after the first row
+    if len(md_rows) >= 1 and not any("---" in r for r in md_rows):
+        first_row = md_rows[0]
+        col_count = first_row.count("|") - 1
+        if col_count > 0:
+            md_rows.insert(1, "| " + " | ".join("---" for _ in range(col_count)) + " |")
+
+    return "\n".join(md_rows)
+
+
+def _list_to_markdown(list_tag, indent: int = 0) -> str:
+    """Convert an HTML list element to markdown with proper nesting."""
+    lines: list[str] = []
+    is_ordered = list_tag.name == "ol"
+    counter = 1
+
+    for li in list_tag.find_all("li", recursive=False):
+        # Get direct text content (not nested list text)
+        text_parts = []
+        for child in li.children:
+            if hasattr(child, "name") and child.name in ("ul", "ol"):
+                continue  # Skip nested lists — handled below
+            if hasattr(child, "get_text"):
+                t = child.get_text(strip=True)
+            else:
+                t = str(child).strip()
+            if t:
+                text_parts.append(t)
+
+        text = " ".join(text_parts)
+        prefix = "  " * indent
+        if is_ordered:
+            lines.append(f"{prefix}{counter}. {text}")
+            counter += 1
+        else:
+            lines.append(f"{prefix}- {text}")
+
+        # Process nested lists
+        for nested in li.find_all(["ul", "ol"], recursive=False):
+            nested_md = _list_to_markdown(nested, indent=indent + 1)
+            if nested_md:
+                lines.append(nested_md)
+
+    return "\n".join(lines)
+
+
+# ── Fallback chain ─────────────────────────────────────────────
+
+_STRATEGIES = [
+    ("markdownify", _markdownify_strategy),
+    ("beautifulsoup", _beautifulsoup_strategy),
+    ("raw_text", _raw_text_strategy),
+]
+
+
+def extract_content(html: str) -> ExtractionResult:
+    """Extract content from HTML using a fallback chain with quality scoring.
+
+    Tries strategies in order: markdownify → BeautifulSoup structured → raw text.
+    Returns the first result that scores above the "good" threshold, or the
+    best result found across all strategies with a quality warning if none
+    are good enough.
+
+    Never raises — always returns best-effort content with quality metadata.
+    """
+    best: tuple[float, str, str] | None = None  # (score, content, strategy_name)
+
+    for name, strategy in _STRATEGIES:
+        try:
+            result = strategy(html)
+        except Exception:
+            logger.debug("Strategy %s failed, continuing", name, exc_info=True)
+            continue
+
+        score = score_quality(result, html)
+        logger.debug("Strategy %s scored %.2f (%d chars)", name, score, len(result))
+
+        if score >= _GOOD_THRESHOLD:
+            return ExtractionResult(
+                content=result,
+                quality="good",
+                strategy=name,
+                quality_warning=None,
+            )
+
+        if best is None or score > best[0]:
+            best = (score, result, name)
+
+    # All strategies exhausted — return the best we found
+    if best is not None:
+        quality = _classify_quality(best[0])
+        warning = (
+            "Extraction produced low-quality output. Consider retrying with "
+            "a different wait_strategy or after the page fully loads."
+            if quality == "poor"
+            else None
+        )
+        return ExtractionResult(
+            content=best[1],
+            quality=quality,
+            strategy=best[2],
+            quality_warning=warning,
+        )
+
+    # Nothing at all — empty input or all strategies crashed
+    return ExtractionResult(
+        content="",
+        quality="poor",
+        strategy="none",
+        quality_warning="All extraction strategies produced empty output.",
+    )
+
+
+# ── Legacy interface (backward-compatible) ─────────────────────
+
+
+def html_to_markdown(html: str, base_url: str = "") -> str:
+    """Convert HTML to clean readable markdown.
+
+    Preserved for backward compatibility.  New callers should prefer
+    ``extract_content()`` which adds quality metadata.
+    """
+    result = _markdownify_strategy(html)
+    if result:
+        return result
+    # Fallback when markdownify is not installed
+    return _raw_text_strategy(html)
 
 
 def extract_forum_threads(html: str) -> list[dict]:

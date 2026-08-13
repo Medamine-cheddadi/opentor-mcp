@@ -21,6 +21,8 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from tor_mcp.errors import TRANSIENT, classify_error, structured_error
+
 logger = logging.getLogger("tor-mcp.browser")
 
 # A stable viewport reduces accidental variation without claiming Tor Browser parity.
@@ -143,12 +145,14 @@ class TorBrowser:
         archives_dir: Path | None = None,
         ignore_https_errors: bool = False,
         tor_control_password: str | None = None,
+        compatibility_mode: bool = False,
     ):
         self.tor_socks_port = tor_socks_port
         self.tor_control_port = tor_control_port
         self.headless = headless
         self.ignore_https_errors = ignore_https_errors
         self.tor_control_password = tor_control_password
+        self.compatibility_mode = compatibility_mode
         self.archives_dir = archives_dir or Path("archives")
         self.archives_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.archives_dir.chmod(0o700)
@@ -179,10 +183,19 @@ class TorBrowser:
             if self._launched:
                 return
             try:
+                prefs = dict(STEALTH_PREFS)
+                if self.compatibility_mode:
+                    # Relax prefs that break JS-heavy sites while keeping
+                    # core privacy controls intact.  Service workers are
+                    # required by many SPAs; canvas read is needed by sites
+                    # that render to <canvas> for layout or verification.
+                    prefs["dom.serviceWorkers.enabled"] = True
+                    prefs["privacy.canvas.read.enabled"] = True
+
                 self._playwright = await async_playwright().start()
                 self._browser = await self._playwright.firefox.launch(
                     headless=self.headless,
-                    firefox_user_prefs=STEALTH_PREFS,
+                    firefox_user_prefs=prefs,
                 )
                 self._context = await self._browser.new_context(
                     proxy={"server": f"socks5://127.0.0.1:{self.tor_socks_port}"},
@@ -225,20 +238,130 @@ class TorBrowser:
 
     # ── Navigation ──────────────────────────────────────────────
 
-    async def navigate(self, url: str, timeout: int = 60000) -> dict:
-        """Navigate to a URL. Returns page info."""
+    async def navigate(
+        self,
+        url: str,
+        timeout: int = 60000,
+        wait_strategy: str = "standard",
+        wait_selector: str | None = None,
+        max_retries: int = 2,
+        retry_backoff: float = 2.0,
+    ) -> dict:
+        """Navigate to a URL with configurable wait behaviour.
+
+        *wait_strategy* controls how long the browser waits after issuing
+        the navigation request:
+
+        * ``"fast"``     — waits for ``domcontentloaded`` only.
+        * ``"standard"`` — waits for ``networkidle`` (default).
+        * ``"full"``     — waits for ``networkidle`` **and** for
+          *wait_selector* to appear in the DOM.
+
+        On transient failures the method retries up to *max_retries* times,
+        rotating the Tor circuit before each retry to obtain a fresh exit
+        node (cookies are preserved).  Exponential back-off starts at
+        *retry_backoff* seconds and doubles on each subsequent attempt.
+        """
         validate_navigation_url(url)
         await self.ensure_launched()
+
+        last_error: dict | None = None
+        rotation_warning: str | None = None
+
+        for attempt in range(1 + max(0, max_retries)):
+            # On retries: rotate circuit then back off.
+            if attempt > 0:
+                rotation_result = await self.rotate_circuit()
+                if "failed" in rotation_result.lower():
+                    rotation_warning = rotation_result
+                delay = retry_backoff * (2 ** (attempt - 1))
+                await asyncio.sleep(delay)
+
+            result = await self._navigate_once(
+                url, timeout=timeout,
+                wait_strategy=wait_strategy,
+                wait_selector=wait_selector,
+            )
+
+            if "error" not in result:
+                if rotation_warning and attempt > 0:
+                    result["rotation_warning"] = rotation_warning
+                return result
+
+            error = result["error"]
+            # Only retry when navigation itself failed (no HTTP status).
+            # A selector timeout after a successful page load (status present)
+            # is a content issue — circuit rotation won't help.
+            if not error.get("retryable", False) or result.get("status") is not None:
+                return result
+
+            last_error = error
+
+        # All retries exhausted — surface the last error with identity hint.
+        assert last_error is not None
+        suggestion = (
+            last_error.get("suggestion", "")
+            + " All retry attempts with circuit rotation were exhausted."
+            " You may manually call tor_new_identity for a full identity"
+            " reset (this clears cookies)."
+        )
+        final_error = {**last_error, "suggestion": suggestion}
+        if rotation_warning:
+            final_error["rotation_warning"] = rotation_warning
+        return {
+            "url": url,
+            "title": None,
+            "status": None,
+            "error": final_error,
+        }
+
+    async def _navigate_once(
+        self,
+        url: str,
+        timeout: int = 60000,
+        wait_strategy: str = "standard",
+        wait_selector: str | None = None,
+    ) -> dict:
+        """Execute a single navigation attempt (no retries)."""
+        wait_until = "domcontentloaded" if wait_strategy == "fast" else "networkidle"
+
         try:
-            response = await self.page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-            await self.page.wait_for_timeout(1000)  # Let JS settle
+            response = await self.page.goto(
+                url, timeout=timeout, wait_until=wait_until,
+            )
+
+            if wait_strategy == "full" and wait_selector:
+                try:
+                    await self.page.wait_for_selector(
+                        wait_selector, timeout=timeout,
+                    )
+                except Exception:
+                    return {
+                        "url": self.page.url,
+                        "title": await self.page.title(),
+                        "status": response.status if response else None,
+                        "error": structured_error(
+                            TRANSIENT,
+                            f"Page loaded but the selector '{wait_selector}' "
+                            f"did not appear within {timeout}ms.",
+                            "Try increasing the timeout or verify the CSS "
+                            "selector is correct for the loaded page.",
+                            retryable=True,
+                        ),
+                    }
+
             return {
                 "url": self.page.url,
                 "title": await self.page.title(),
                 "status": response.status if response else None,
             }
         except Exception as e:
-            return {"url": url, "title": None, "status": None, "error": str(e)}
+            return {
+                "url": url,
+                "title": None,
+                "status": None,
+                "error": classify_error(e),
+            }
 
     async def go_back(self) -> dict:
         await self.ensure_launched()
