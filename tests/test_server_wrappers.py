@@ -22,40 +22,40 @@ class Browser:
         self.events.append(("navigate", url, timeout))
         return {"url": url, "status": 200}
 
-    async def go_back(self):
+    async def go_back(self, tab_id=None):
         return {"url": "back"}
 
-    async def go_forward(self):
+    async def go_forward(self, tab_id=None):
         return {"url": "forward"}
 
-    async def refresh(self):
+    async def refresh(self, tab_id=None):
         return {"url": "refresh"}
 
-    async def get_page_info(self):
+    async def get_page_info(self, tab_id=None):
         return {"url": "https://example.com", "title": "Title"}
 
-    async def click(self, selector, timeout):
+    async def click(self, selector, timeout, tab_id=None):
         return f"click:{selector}:{timeout}"
 
-    async def type_text(self, selector, text):
+    async def type_text(self, selector, text, tab_id=None):
         return f"type:{selector}:{text}"
 
-    async def press_key(self, key):
+    async def press_key(self, key, tab_id=None):
         return f"key:{key}"
 
-    async def scroll(self, direction, amount):
+    async def scroll(self, direction, amount, tab_id=None):
         return f"scroll:{direction}:{amount}"
 
-    async def get_html(self):
+    async def get_html(self, tab_id=None):
         return "<html><body>plain fallback content</body></html>"
 
-    async def get_content(self):
+    async def get_content(self, tab_id=None):
         return "plain fallback content"
 
     async def get_cookies(self):
         return self.cookies
 
-    async def current_url(self):
+    async def current_url(self, tab_id=None):
         return "https://example.com/current"
 
     async def set_cookies(self, cookies):
@@ -67,7 +67,7 @@ class Browser:
     async def check_tor_connection(self):
         return {"connected": True, "ip": "198.51.100.1"}
 
-    async def archive_page(self, name):
+    async def archive_page(self, name, tab_id=None):
         return f"archive:{name}"
 
     async def close(self):

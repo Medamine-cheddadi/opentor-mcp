@@ -325,6 +325,7 @@ class TorBrowser:
         wait_selector: str | None = None,
         max_retries: int = 2,
         retry_backoff: float = 2.0,
+        tab_id: str | None = None,
     ) -> dict:
         """Navigate to a URL with configurable wait behaviour.
 
@@ -360,6 +361,7 @@ class TorBrowser:
                 url, timeout=timeout,
                 wait_strategy=wait_strategy,
                 wait_selector=wait_selector,
+                tab_id=tab_id,
             )
 
             if "error" not in result:
@@ -400,24 +402,26 @@ class TorBrowser:
         timeout: int = 60000,
         wait_strategy: str = "standard",
         wait_selector: str | None = None,
+        tab_id: str | None = None,
     ) -> dict:
         """Execute a single navigation attempt (no retries)."""
         wait_until = "domcontentloaded" if wait_strategy == "fast" else "networkidle"
+        page = self.get_page(tab_id)
 
         try:
-            response = await self.page.goto(
+            response = await page.goto(
                 url, timeout=timeout, wait_until=wait_until,
             )
 
             if wait_strategy == "full" and wait_selector:
                 try:
-                    await self.page.wait_for_selector(
+                    await page.wait_for_selector(
                         wait_selector, timeout=timeout,
                     )
                 except Exception:
                     return {
-                        "url": self.page.url,
-                        "title": await self.page.title(),
+                        "url": page.url,
+                        "title": await page.title(),
                         "status": response.status if response else None,
                         "error": structured_error(
                             TRANSIENT,
@@ -430,8 +434,8 @@ class TorBrowser:
                     }
 
             return {
-                "url": self.page.url,
-                "title": await self.page.title(),
+                "url": page.url,
+                "title": await page.title(),
                 "status": response.status if response else None,
             }
         except Exception as e:
@@ -442,54 +446,63 @@ class TorBrowser:
                 "error": classify_error(e),
             }
 
-    async def go_back(self) -> dict:
+    async def go_back(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.go_back()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.go_back()
+        return {"url": page.url, "title": await page.title()}
 
-    async def go_forward(self) -> dict:
+    async def go_forward(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.go_forward()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.go_forward()
+        return {"url": page.url, "title": await page.title()}
 
-    async def refresh(self) -> dict:
+    async def refresh(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.reload()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.reload()
+        return {"url": page.url, "title": await page.title()}
 
-    async def current_url(self) -> str:
+    async def current_url(self, tab_id: str | None = None) -> str:
         await self.ensure_launched()
-        return self.page.url
+        return self.get_page(tab_id).url
 
     # ── Interaction ─────────────────────────────────────────────
 
-    async def click(self, selector: str, timeout: int = 10000) -> str:
+    async def click(self, selector: str, timeout: int = 10000, tab_id: str | None = None) -> str:
         """Click an element by CSS selector."""
         await self.ensure_launched()
-        await self.page.click(selector, timeout=timeout)
-        await self.page.wait_for_timeout(500)
+        page = self.get_page(tab_id)
+        await page.click(selector, timeout=timeout)
+        await page.wait_for_timeout(500)
         return f"Clicked: {selector}"
 
-    async def type_text(self, selector: str, text: str, delay: int = 50) -> str:
+    async def type_text(
+        self, selector: str, text: str, delay: int = 50, tab_id: str | None = None,
+    ) -> str:
         """Type text into an input field (human-like delay between keystrokes)."""
         await self.ensure_launched()
-        await self.page.fill(selector, "")  # Clear first
-        await self.page.type(selector, text, delay=delay)
+        page = self.get_page(tab_id)
+        await page.fill(selector, "")  # Clear first
+        await page.type(selector, text, delay=delay)
         return f"Typed into: {selector}"
 
-    async def press_key(self, key: str) -> str:
+    async def press_key(self, key: str, tab_id: str | None = None) -> str:
         """Press a keyboard key (Enter, Tab, etc.)."""
         await self.ensure_launched()
-        await self.page.keyboard.press(key)
+        page = self.get_page(tab_id)
+        await page.keyboard.press(key)
         return f"Pressed: {key}"
 
-    async def select_option(self, selector: str, value: str) -> str:
+    async def select_option(self, selector: str, value: str, tab_id: str | None = None) -> str:
         """Select a dropdown option."""
         await self.ensure_launched()
-        await self.page.select_option(selector, value)
+        page = self.get_page(tab_id)
+        await page.select_option(selector, value)
         return f"Selected {value} in {selector}"
 
-    async def fill_form(self, fields: dict[str, str]) -> dict:
+    async def fill_form(self, fields: dict[str, str], tab_id: str | None = None) -> dict:
         """Fill multiple form fields in one call.
 
         Returns a dict with per-field results and an overall success flag.
@@ -499,12 +512,13 @@ class TorBrowser:
         from tor_mcp.errors import redact_sensitive_values
 
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         results: dict[str, str] = {}
         errors: dict[str, str] = {}
 
         for selector, value in fields.items():
             try:
-                await self.page.fill(selector, value)
+                await page.fill(selector, value)
                 results[selector] = "filled"
             except Exception as exc:
                 raw_message = str(exc)
@@ -525,79 +539,87 @@ class TorBrowser:
             response["errors"] = errors
         return response
 
-    async def toggle_checkbox(self, selector: str, checked: bool) -> str:
+    async def toggle_checkbox(self, selector: str, checked: bool, tab_id: str | None = None) -> str:
         """Check or uncheck a checkbox element."""
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         if checked:
-            await self.page.check(selector)
+            await page.check(selector)
         else:
-            await self.page.uncheck(selector)
+            await page.uncheck(selector)
         state = "checked" if checked else "unchecked"
         return f"Checkbox {state}: {selector}"
 
-    async def scroll(self, direction: str = "down", amount: int = 500) -> str:
+    async def scroll(
+        self, direction: str = "down", amount: int = 500, tab_id: str | None = None,
+    ) -> str:
         """Scroll the page. Direction: up/down/top/bottom."""
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         if direction == "top":
-            await self.page.evaluate("window.scrollTo(0, 0)")
+            await page.evaluate("window.scrollTo(0, 0)")
         elif direction == "bottom":
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         elif direction == "up":
-            await self.page.evaluate("amount => window.scrollBy(0, -amount)", amount)
+            await page.evaluate("amount => window.scrollBy(0, -amount)", amount)
         elif direction == "down":
-            await self.page.evaluate("amount => window.scrollBy(0, amount)", amount)
+            await page.evaluate("amount => window.scrollBy(0, amount)", amount)
         else:
             raise ValueError("Direction must be one of: up, down, top, bottom.")
         return f"Scrolled {direction} by {amount}px"
 
-    async def wait_for(self, selector: str, timeout: int = 10000) -> bool:
+    async def wait_for(
+        self, selector: str, timeout: int = 10000, tab_id: str | None = None,
+    ) -> bool:
         """Wait for an element to appear."""
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         try:
-            await self.page.wait_for_selector(selector, timeout=timeout)
+            await page.wait_for_selector(selector, timeout=timeout)
             return True
         except Exception:
             return False
 
     # ── Reading ─────────────────────────────────────────────────
 
-    async def screenshot(self, full_page: bool = False) -> bytes:
+    async def screenshot(self, full_page: bool = False, tab_id: str | None = None) -> bytes:
         """Take a screenshot, returns PNG bytes."""
         await self.ensure_launched()
-        return await self.page.screenshot(full_page=full_page)
+        return await self.get_page(tab_id).screenshot(full_page=full_page)
 
-    async def screenshot_element(self, selector: str) -> bytes:
+    async def screenshot_element(self, selector: str, tab_id: str | None = None) -> bytes:
         """Screenshot a specific element, returns PNG bytes."""
         await self.ensure_launched()
-        element = await self.page.query_selector(selector)
+        page = self.get_page(tab_id)
+        element = await page.query_selector(selector)
         if not element:
             raise ValueError(f"Element not found: {selector}")
         return await element.screenshot()
 
-    async def get_content(self) -> str:
+    async def get_content(self, tab_id: str | None = None) -> str:
         """Get the page's inner text content."""
         await self.ensure_launched()
-        return await self.page.inner_text("body")
+        return await self.get_page(tab_id).inner_text("body")
 
-    async def get_html(self) -> str:
+    async def get_html(self, tab_id: str | None = None) -> str:
         """Get raw HTML of the page."""
         await self.ensure_launched()
-        return await self.page.content()
+        return await self.get_page(tab_id).content()
 
-    async def get_links(self) -> list[dict]:
+    async def get_links(self, tab_id: str | None = None) -> list[dict]:
         """Extract all links from the page."""
         await self.ensure_launched()
-        return await self.page.evaluate("""
+        return await self.get_page(tab_id).evaluate("""
             () => Array.from(document.querySelectorAll('a[href]')).map(a => ({
                 text: a.innerText.trim().substring(0, 200),
                 href: a.href,
             })).filter(l => l.href && l.text)
         """)
 
-    async def get_page_info(self) -> dict:
+    async def get_page_info(self, tab_id: str | None = None) -> dict:
         """Get current page metadata."""
         await self.ensure_launched()
-        return await self.page.evaluate("""
+        return await self.get_page(tab_id).evaluate("""
             () => ({
                 url: window.location.href,
                 title: document.title,
@@ -610,16 +632,16 @@ class TorBrowser:
             })
         """)
 
-    async def evaluate_js(self, script: str) -> str:
+    async def evaluate_js(self, script: str, tab_id: str | None = None) -> str:
         """Execute JavaScript on the page and return result."""
         await self.ensure_launched()
-        result = await self.page.evaluate(script)
+        result = await self.get_page(tab_id).evaluate(script)
         return str(result)
 
-    async def query_elements(self, selector: str) -> list[dict]:
+    async def query_elements(self, selector: str, tab_id: str | None = None) -> list[dict]:
         """Query elements and return their text + attributes."""
         await self.ensure_launched()
-        return await self.page.evaluate(
+        return await self.get_page(tab_id).evaluate(
             """
             selector => Array.from(document.querySelectorAll(selector)).map((el, i) => ({
                 index: i,
@@ -724,7 +746,7 @@ class TorBrowser:
 
     # ── Archive ─────────────────────────────────────────────────
 
-    async def archive_page(self, name: str) -> str:
+    async def archive_page(self, name: str, tab_id: str | None = None) -> str:
         """Save current page content and screenshot to archives."""
         validate_storage_name(name, kind="archive name")
         archive_root = self.archives_dir.resolve()
@@ -740,23 +762,23 @@ class TorBrowser:
         archive_dir.chmod(0o700)
 
         # Save HTML
-        html = await self.get_html()
+        html = await self.get_html(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file, archive_dir / "page.html", html.encode("utf-8")
         )
 
         # Save text content
-        text = await self.get_content()
+        text = await self.get_content(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file, archive_dir / "content.txt", text.encode("utf-8")
         )
 
         # Save screenshot
-        screenshot = await self.screenshot(full_page=True)
+        screenshot = await self.screenshot(full_page=True, tab_id=tab_id)
         await asyncio.to_thread(_write_private_file, archive_dir / "screenshot.png", screenshot)
 
         # Save metadata
-        info = await self.get_page_info()
+        info = await self.get_page_info(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file,
             archive_dir / "metadata.json",

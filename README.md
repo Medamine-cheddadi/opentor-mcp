@@ -10,7 +10,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Medamine-cheddadi/opentor-mcp/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white)](https://github.com/Medamine-cheddadi/opentor-mcp/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![MCP](https://img.shields.io/badge/MCP-27_tools-7C3AED?style=flat-square)](#tools)
+[![MCP](https://img.shields.io/badge/MCP-35_tools-7C3AED?style=flat-square)](#tools)
 [![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D97706?style=flat-square)](#limitations)
 
@@ -38,7 +38,7 @@ It is designed as a small, local-first side project for supervised research and 
 
 ### MCP-native
 
-27 focused tools with native image results and safety annotations — screenshots and CAPTCHAs come
+35 focused tools with native image results and safety annotations — screenshots and CAPTCHAs come
 back as real MCP image content, not base64 blobs in a text field.
 
 </td>
@@ -93,7 +93,7 @@ circuits rotate on demand.
 ```mermaid
 %%{init: {'theme':'base','fontFamily':'-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif','themeVariables':{'primaryColor':'#7C3AED','primaryTextColor':'#FFFFFF','primaryBorderColor':'#6D28D9','lineColor':'#8B5CF6','edgeLabelBackground':'#4B5563','tertiaryTextColor':'#FFFFFF','fontSize':'15px'}}}%%
 flowchart LR
-    C["MCP client"] -->|stdio| S["OpenTor MCP<br/>27 tools"]
+    C["MCP client"] -->|stdio| S["OpenTor MCP<br/>35 tools"]
     S --> G{"URL policy<br/>gate"}
     G -->|allowed| F["Playwright<br/>Firefox"]
     F --> T["Tor SOCKS5<br/>127.0.0.1:9050"]
@@ -227,11 +227,12 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Interaction** | 9 | Click, type, key press, scroll, element wait, optional JS, select, batch fill, checkbox |
 | **Search and extraction** | 3 | Onion search engines and forum extraction |
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
+| **Tab management** | 3 | Open, close, and list browser tabs |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
-| **Tor control and archiving** | 3 | New circuit, connection check, page snapshot |
+| **Tor control and archiving** | 4 | New circuit, circuit rotation, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (32 total) — full reference</strong></summary>
+<summary><strong>Tools (35 total) — full reference</strong></summary>
 
 <br>
 
@@ -292,6 +293,14 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_load_session` | Restore cookies from a saved session |
 | `tor_list_sessions` | List saved session metadata without exposing cookie values |
 | `tor_delete_session` | Delete a saved session |
+
+#### Tab management
+
+| Tool | Description |
+| --- | --- |
+| `tor_open_tab` | Open a new browser tab and make it the active tab |
+| `tor_close_tab` | Close a browser tab (cannot close the last remaining tab) |
+| `tor_list_tabs` | List all open browser tabs with their URL and active status |
 
 #### Tor control and archiving
 

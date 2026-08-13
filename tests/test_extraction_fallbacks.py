@@ -239,7 +239,7 @@ def test_tor_read_page_includes_extraction_quality_metadata(monkeypatch):
     import tor_mcp.server as server
 
     class FakeBrowser:
-        async def get_html(self):
+        async def get_html(self, tab_id=None):
             return """
             <html><body>
               <h1>Test Page Title</h1>
@@ -258,7 +258,7 @@ def test_tor_read_page_includes_extraction_quality_metadata(monkeypatch):
         async def current_url(self):
             return "https://example.onion/page"
 
-        async def get_page_info(self):
+        async def get_page_info(self, tab_id=None):
             return {"title": "Test Page Title", "url": "https://example.onion/page"}
 
     monkeypatch.setattr(server, "get_browser", lambda: FakeBrowser())
@@ -273,13 +273,13 @@ def test_tor_read_page_surfaces_quality_warning_for_poor_content(monkeypatch):
     import tor_mcp.server as server
 
     class EmptyBrowser:
-        async def get_html(self):
+        async def get_html(self, tab_id=None):
             return "<html><body><script>var x = 1;</script></body></html>"
 
         async def current_url(self):
             return "https://example.onion"
 
-        async def get_page_info(self):
+        async def get_page_info(self, tab_id=None):
             return {"title": "Empty", "url": "https://example.onion"}
 
     monkeypatch.setattr(server, "get_browser", lambda: EmptyBrowser())
