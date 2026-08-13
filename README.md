@@ -231,7 +231,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Tor control and archiving** | 3 | New circuit, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (28 total) — full reference</strong></summary>
+<summary><strong>Tools (29 total) — full reference</strong></summary>
 
 <br>
 
@@ -295,6 +295,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | Tool | Description |
 | --- | --- |
 | `tor_new_identity` | Request a new Tor circuit and clear browser cookies |
+| `tor_rotate_circuit` | Rotate the Tor circuit without clearing cookies (preserves sessions) |
 | `tor_check_connection` | Check the Tor exit IP without replacing the active page |
 | `tor_archive_page` | Save a private page snapshot beneath the configured archive root |
 

@@ -179,7 +179,9 @@ class _ReadingBrowser:
     async def query_elements(self, selector):
         return self.elements
 
-    async def navigate(self, url, timeout=60000, **kwargs):
+    async def navigate(
+        self, url, timeout=60000, **kwargs,
+    ):
         self.navigated_to = url
         return {"url": url, "title": "Results", "status": 200}
 
@@ -357,9 +359,11 @@ class _NavigateWaitBrowser:
         self.last_wait_strategy = None
         self.last_wait_selector = None
 
-    async def navigate(self, url, timeout=60000, wait_strategy="standard", wait_selector=None):
-        self.last_wait_strategy = wait_strategy
-        self.last_wait_selector = wait_selector
+    async def navigate(
+        self, url, timeout=60000, **kwargs,
+    ):
+        self.last_wait_strategy = kwargs.get("wait_strategy")
+        self.last_wait_selector = kwargs.get("wait_selector")
         return {"url": url, "title": "Test", "status": 200}
 
 
@@ -374,6 +378,41 @@ def test_navigate_passes_wait_strategy_and_selector_to_browser(monkeypatch):
     assert browser.last_wait_selector == "#app"
 
 
+class _RotateCircuitBrowser:
+    def __init__(self, success=True):
+        self._success = success
+        self.rotated = False
+
+    async def rotate_circuit(self):
+        self.rotated = True
+        if self._success:
+            return "Tor circuit rotated. Cookies preserved."
+        return "Tor circuit rotation failed. Check the authenticated control-port configuration."
+
+
+def test_rotate_circuit_tool_returns_success(monkeypatch):
+    server = server_module()
+    browser = _RotateCircuitBrowser(success=True)
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    result = run(server.tor_rotate_circuit())
+
+    assert browser.rotated
+    assert "rotated" in result.lower()
+    assert "cookies preserved" in result.lower()
+
+
+def test_rotate_circuit_tool_returns_failure(monkeypatch):
+    server = server_module()
+    browser = _RotateCircuitBrowser(success=False)
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    result = run(server.tor_rotate_circuit())
+
+    assert browser.rotated
+    assert "failed" in result.lower()
+
+
 @pytest.mark.parametrize(
     ("tool_name", "read_only", "destructive", "open_world"),
     [
@@ -382,6 +421,7 @@ def test_navigate_passes_wait_strategy_and_selector_to_browser(monkeypatch):
         ("tor_wait_for", True, False, True),
         ("tor_evaluate_js", False, True, True),
         ("tor_new_identity", False, True, True),
+        ("tor_rotate_circuit", False, True, True),
         ("tor_delete_session", False, True, False),
         ("tor_list_sessions", True, False, False),
         ("tor_search", False, False, True),

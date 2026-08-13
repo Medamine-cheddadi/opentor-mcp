@@ -46,6 +46,8 @@ MAX_RESPONSE_CHARS = max(1, int(os.environ.get("TOR_MAX_RESPONSE_CHARS", "50000"
 MAX_ITEM_LIMIT = max(1, int(os.environ.get("TOR_MAX_ITEM_LIMIT", "100")))
 MAX_IMAGE_BYTES = max(1, int(os.environ.get("TOR_MAX_IMAGE_BYTES", "5000000")))
 MAX_JSON_FIELD_CHARS = max(1, int(os.environ.get("TOR_MAX_JSON_FIELD_CHARS", "4096")))
+TOR_MAX_RETRIES = max(0, int(os.environ.get("TOR_MAX_RETRIES", "2")))
+TOR_RETRY_BACKOFF = max(0.0, float(os.environ.get("TOR_RETRY_BACKOFF", "2.0")))
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -267,6 +269,7 @@ async def tor_navigate(
 ) -> str:
     result = await get_browser().navigate(
         url, timeout, wait_strategy=wait_strategy, wait_selector=wait_selector,
+        max_retries=TOR_MAX_RETRIES, retry_backoff=TOR_RETRY_BACKOFF,
     )
     if "error" in result:
         error_response = {**result["error"], "url": result.get("url")}
@@ -589,6 +592,15 @@ async def tor_delete_session(name: str) -> str:
 @serialized_browser_tool
 async def tor_new_identity() -> str:
     return await get_browser().new_identity()
+
+
+@mcp.tool(
+    description="Rotate the Tor circuit without clearing cookies (preserves sessions).",
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_rotate_circuit() -> str:
+    return await get_browser().rotate_circuit()
 
 
 @mcp.tool(

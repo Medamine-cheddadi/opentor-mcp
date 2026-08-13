@@ -32,7 +32,7 @@ def test_tool_count():
     from tor_mcp.server import mcp
 
     tools = mcp._tool_manager._tools
-    assert len(tools) == 28
+    assert len(tools) == 29
 
 
 def test_privacy_prefs():

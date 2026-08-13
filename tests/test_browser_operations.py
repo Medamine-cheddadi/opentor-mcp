@@ -340,3 +340,190 @@ def test_compatibility_mode_relaxes_stealth_prefs(tmp_path):
 
     browser_default = TorBrowser(archives_dir=tmp_path / "archives2")
     assert browser_default.compatibility_mode is False
+
+
+# ── Self-healing retry tests ──────────────────────────────────────
+
+
+def test_navigate_succeeds_first_try_no_retry(monkeypatch, browser):
+    """Happy path: success on first attempt — no rotation, no retry."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    rotation_calls = []
+    browser.rotate_circuit = AsyncMock(side_effect=lambda: rotation_calls.append(1) or "rotated")
+
+    result = run(browser.navigate("https://example.com/ok", max_retries=2, retry_backoff=0.01))
+
+    assert "error" not in result
+    assert result["url"] == "https://example.com/ok"
+    assert rotation_calls == []
+    asyncio.sleep.assert_not_awaited()
+
+
+def test_navigate_retries_on_transient_then_succeeds(monkeypatch, browser):
+    """Navigation fails with timeout, rotation succeeds, retry succeeds."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    call_count = 0
+    original_goto = browser.page.goto
+
+    async def flaky_goto(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise TimeoutError("page timed out")
+        return await original_goto(url, **kwargs)
+
+    browser.page.goto = flaky_goto
+    browser.rotate_circuit = AsyncMock(return_value="Tor circuit rotated. Cookies preserved.")
+
+    result = run(browser.navigate("https://example.com/ok", max_retries=2, retry_backoff=0.01))
+
+    assert "error" not in result
+    assert result["url"] == "https://example.com/ok"
+    browser.rotate_circuit.assert_awaited_once()
+    asyncio.sleep.assert_awaited_once()
+
+
+def test_navigate_rotation_fails_retry_succeeds_with_warning(monkeypatch, browser):
+    """Rotation fails (control port down), retry succeeds without rotation."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    call_count = 0
+    original_goto = browser.page.goto
+
+    async def flaky_goto(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise TimeoutError("page timed out")
+        return await original_goto(url, **kwargs)
+
+    browser.page.goto = flaky_goto
+    rotation_msg = (
+        "Tor circuit rotation failed."
+        " Check the authenticated control-port configuration."
+    )
+    browser.rotate_circuit = AsyncMock(return_value=rotation_msg)
+
+    result = run(browser.navigate("https://example.com/ok", max_retries=2, retry_backoff=0.01))
+
+    assert "error" not in result
+    assert result["url"] == "https://example.com/ok"
+    assert "rotation_warning" in result
+    assert "failed" in result["rotation_warning"].lower()
+
+
+def test_navigate_all_retries_exhausted(monkeypatch, browser):
+    """All retries exhausted — permanent error with new_identity suggestion."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    async def always_fail(url, **kwargs):
+        raise TimeoutError("page timed out")
+
+    browser.page.goto = always_fail
+    browser.rotate_circuit = AsyncMock(return_value="Tor circuit rotated. Cookies preserved.")
+
+    result = run(browser.navigate("https://example.com/stuck", max_retries=2, retry_backoff=0.01))
+
+    assert result["error"]["category"] == "transient"
+    assert "tor_new_identity" in result["error"]["suggestion"]
+    assert "exhausted" in result["error"]["suggestion"].lower()
+    assert result["url"] == "https://example.com/stuck"
+    assert result["title"] is None
+    assert result["status"] is None
+
+
+def test_navigate_rotation_succeeds_but_retry_still_fails(monkeypatch, browser):
+    """Rotation succeeds but retry still fails — exhausts budget."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    async def always_fail(url, **kwargs):
+        raise TimeoutError("page timed out")
+
+    browser.page.goto = always_fail
+    browser.rotate_circuit = AsyncMock(return_value="Tor circuit rotated. Cookies preserved.")
+
+    result = run(browser.navigate("https://example.com/down", max_retries=1, retry_backoff=0.01))
+
+    assert "error" in result
+    assert "tor_new_identity" in result["error"]["suggestion"]
+    assert browser.rotate_circuit.await_count == 1
+
+
+def test_navigate_max_retries_zero_no_retry(monkeypatch, browser):
+    """Max retries set to 0 — no retry, immediate error return."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    async def always_fail(url, **kwargs):
+        raise TimeoutError("page timed out")
+
+    browser.page.goto = always_fail
+    browser.rotate_circuit = AsyncMock(return_value="rotated")
+
+    result = run(browser.navigate("https://example.com/fail", max_retries=0, retry_backoff=0.01))
+
+    assert "error" in result
+    assert result["error"]["category"] == "transient"
+    browser.rotate_circuit.assert_not_awaited()
+    asyncio.sleep.assert_not_awaited()
+
+
+def test_navigate_permanent_error_not_retried(monkeypatch, browser):
+    """Permanent errors are not retried regardless of retry budget."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    browser.rotate_circuit = AsyncMock(return_value="rotated")
+
+    async def permanent_fail(url, **kwargs):
+        raise ValueError("Element not found: #missing")
+
+    browser.page.goto = permanent_fail
+
+    result = run(browser.navigate("https://example.com/page", max_retries=2, retry_backoff=0.01))
+
+    assert result["error"]["category"] == "permanent"
+    assert result["error"]["retryable"] is False
+    browser.rotate_circuit.assert_not_awaited()
+
+
+def test_navigate_retry_uses_structured_errors(monkeypatch, browser):
+    """Retry loop uses structured errors from Unit 1 to decide retry eligibility."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    call_count = 0
+    original_goto = browser.page.goto
+
+    async def fail_once(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ConnectionError("connection reset by peer")
+        return await original_goto(url, **kwargs)
+
+    browser.page.goto = fail_once
+    browser.rotate_circuit = AsyncMock(return_value="Tor circuit rotated. Cookies preserved.")
+
+    result = run(browser.navigate("https://example.com/ok", max_retries=2, retry_backoff=0.01))
+
+    assert "error" not in result
+    assert result["url"] == "https://example.com/ok"
+    assert call_count == 2
+
+
+def test_navigate_retry_backoff_is_exponential(monkeypatch, browser):
+    """Backoff delays double on each retry attempt."""
+    sleep_delays = []
+
+    async def capture_sleep(delay):
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", capture_sleep)
+
+    async def always_fail(url, **kwargs):
+        raise TimeoutError("timed out")
+
+    browser.page.goto = always_fail
+    browser.rotate_circuit = AsyncMock(return_value="rotated")
+
+    run(browser.navigate("https://example.com/slow", max_retries=3, retry_backoff=2.0))
+
+    assert sleep_delays == [2.0, 4.0, 8.0]

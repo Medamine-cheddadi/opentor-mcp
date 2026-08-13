@@ -244,6 +244,8 @@ class TorBrowser:
         timeout: int = 60000,
         wait_strategy: str = "standard",
         wait_selector: str | None = None,
+        max_retries: int = 2,
+        retry_backoff: float = 2.0,
     ) -> dict:
         """Navigate to a URL with configurable wait behaviour.
 
@@ -254,10 +256,73 @@ class TorBrowser:
         * ``"standard"`` — waits for ``networkidle`` (default).
         * ``"full"``     — waits for ``networkidle`` **and** for
           *wait_selector* to appear in the DOM.
+
+        On transient failures the method retries up to *max_retries* times,
+        rotating the Tor circuit before each retry to obtain a fresh exit
+        node (cookies are preserved).  Exponential back-off starts at
+        *retry_backoff* seconds and doubles on each subsequent attempt.
         """
         validate_navigation_url(url)
         await self.ensure_launched()
 
+        last_error: dict | None = None
+        rotation_warning: str | None = None
+
+        for attempt in range(1 + max(0, max_retries)):
+            # On retries: rotate circuit then back off.
+            if attempt > 0:
+                rotation_result = await self.rotate_circuit()
+                if "failed" in rotation_result.lower():
+                    rotation_warning = rotation_result
+                delay = retry_backoff * (2 ** (attempt - 1))
+                await asyncio.sleep(delay)
+
+            result = await self._navigate_once(
+                url, timeout=timeout,
+                wait_strategy=wait_strategy,
+                wait_selector=wait_selector,
+            )
+
+            if "error" not in result:
+                if rotation_warning and attempt > 0:
+                    result["rotation_warning"] = rotation_warning
+                return result
+
+            error = result["error"]
+            # Only retry when navigation itself failed (no HTTP status).
+            # A selector timeout after a successful page load (status present)
+            # is a content issue — circuit rotation won't help.
+            if not error.get("retryable", False) or result.get("status") is not None:
+                return result
+
+            last_error = error
+
+        # All retries exhausted — surface the last error with identity hint.
+        assert last_error is not None
+        suggestion = (
+            last_error.get("suggestion", "")
+            + " All retry attempts with circuit rotation were exhausted."
+            " You may manually call tor_new_identity for a full identity"
+            " reset (this clears cookies)."
+        )
+        final_error = {**last_error, "suggestion": suggestion}
+        if rotation_warning:
+            final_error["rotation_warning"] = rotation_warning
+        return {
+            "url": url,
+            "title": None,
+            "status": None,
+            "error": final_error,
+        }
+
+    async def _navigate_once(
+        self,
+        url: str,
+        timeout: int = 60000,
+        wait_strategy: str = "standard",
+        wait_selector: str | None = None,
+    ) -> dict:
+        """Execute a single navigation attempt (no retries)."""
         wait_until = "domcontentloaded" if wait_strategy == "fast" else "networkidle"
 
         try:
