@@ -18,7 +18,7 @@ class Browser:
         self.events = []
         self.cookies = [{"name": "sid", "value": "value"}]
 
-    async def navigate(self, url, timeout, **kwargs):
+    async def navigate(self, url, timeout=60000, **kwargs):
         self.events.append(("navigate", url, timeout))
         return {"url": url, "status": 200}
 
@@ -80,7 +80,7 @@ class Sessions:
         self.listed = [] if listed is None else listed
         self.events = []
 
-    async def save(self, name, cookies, url):
+    async def save(self, name, cookies, url, *, description=None, auto_save=False):
         self.events.append(("save", name, cookies, url))
         return "saved"
 
@@ -207,6 +207,7 @@ def test_session_wrappers_cover_save_load_list_delete(monkeypatch):
     assert run(server.tor_save_session("forum")) == "saved"
     loaded = run(server.tor_load_session("forum"))
     assert "1 cookies restored" in loaded
+    assert "Navigated to" in loaded
     assert ("set_cookies", browser.cookies) in browser.events
     assert json.loads(run(server.tor_list_sessions()))["data"][0]["name"] == "forum"
     assert run(server.tor_delete_session("forum")) == "deleted:forum"

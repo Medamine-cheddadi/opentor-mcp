@@ -186,6 +186,10 @@ class TorBrowser:
         self._launched = False
         self._launch_lock = asyncio.Lock()
 
+        # Auto-save state: set via enable_auto_save / disable_auto_save.
+        self._auto_save_session: str | None = None
+        self._auto_save_last_domain: str | None = None
+
     @property
     def page(self) -> Page:
         """Return the active tab's page for backward compatibility."""
@@ -386,6 +390,11 @@ class TorBrowser:
             if "error" not in result:
                 if rotation_warning and attempt > 0:
                     result["rotation_warning"] = rotation_warning
+                # Trigger auto-save on successful navigation.
+                try:
+                    await self._maybe_auto_save(result.get("url", url))
+                except Exception:
+                    logger.warning("Auto-save failed after navigation", exc_info=True)
                 return result
 
             error = result["error"]
@@ -675,6 +684,52 @@ class TorBrowser:
             }))
         """,
             selector,
+        )
+
+    # ── Auto-save ──────────────────────────────────────────────
+
+    def enable_auto_save(self, session_name: str, current_domain: str | None = None) -> None:
+        """Enable auto-save for *session_name*.
+
+        When enabled, navigating to a new domain triggers an automatic
+        session save.  The *current_domain* seeds the last-known domain
+        so the first navigation within the same domain is not saved.
+        """
+        self._auto_save_session = session_name
+        self._auto_save_last_domain = current_domain
+
+    def disable_auto_save(self) -> None:
+        """Disable auto-save."""
+        self._auto_save_session = None
+        self._auto_save_last_domain = None
+
+    async def _maybe_auto_save(self, new_url: str) -> None:
+        """Trigger an auto-save if the domain changed since the last save."""
+        if not self._auto_save_session:
+            return
+
+        new_domain = urlsplit(new_url).hostname or ""
+        if self._auto_save_last_domain and new_domain == self._auto_save_last_domain:
+            return
+
+        # Import here to avoid a circular import at module level.
+        from tor_mcp.sessions import SessionStore
+
+        self._auto_save_last_domain = new_domain
+        cookies = await self.get_cookies()
+
+        # Use a one-off SessionStore pointed at the default storage dir.
+        # The server layer injects the real store; this is a fallback.
+        if not hasattr(self, "_auto_save_store") or self._auto_save_store is None:
+            return
+        store: SessionStore = self._auto_save_store
+        await store.save(
+            self._auto_save_session, cookies, new_url, auto_save=True,
+        )
+        logger.info(
+            "Auto-saved session '%s' on domain change to %s",
+            self._auto_save_session,
+            new_domain,
         )
 
     # ── Cookies / Session ───────────────────────────────────────

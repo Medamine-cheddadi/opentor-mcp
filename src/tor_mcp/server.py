@@ -607,12 +607,25 @@ async def tor_solve_captcha(
 
 @mcp.tool(description="Save current cookies to owner-only local storage.", annotations=MUTATE_LOCAL)
 @serialized_browser_tool
-async def tor_save_session(name: str) -> str:
+async def tor_save_session(
+    name: str,
+    description: str | None = None,
+    auto_save: bool = False,
+) -> str:
     b = get_browser()
     s = get_sessions()
     cookies = await b.get_cookies()
     url = await b.current_url()
-    return await s.save(name, cookies, url)
+    result = await s.save(
+        name, cookies, url, description=description, auto_save=auto_save,
+    )
+    if auto_save:
+        from urllib.parse import urlsplit
+
+        domain = urlsplit(url).hostname or ""
+        b._auto_save_store = s
+        b.enable_auto_save(name, current_domain=domain)
+    return result
 
 
 @mcp.tool(description="Load previously saved cookies into the browser.", annotations=MUTATE_LOCAL)
@@ -624,10 +637,30 @@ async def tor_load_session(name: str) -> str:
     if not data:
         return f"Session '{name}' not found."
     await b.set_cookies(data["cookies"])
+
+    stored_url = data.get("url", "")
+    nav_status = ""
+    if stored_url:
+        try:
+            nav_result = await b.navigate(stored_url)
+            if "error" in nav_result:
+                nav_status = (
+                    f" Navigation to stored URL failed: "
+                    f"{nav_result['error'].get('message', 'unknown error')}."
+                    f" Cookies were still restored."
+                )
+            else:
+                nav_status = f" Navigated to {nav_result.get('url', stored_url)}."
+        except Exception as exc:
+            nav_status = (
+                f" Navigation to stored URL failed: {exc}."
+                f" Cookies were still restored."
+            )
+
     return (
         f"Session '{name}' loaded. "
-        f"{data['cookie_count']} cookies restored ({data['age_hours']}h old). "
-        f"Original URL: {data.get('url', 'unknown')}"
+        f"{data['cookie_count']} cookies restored ({data['age_hours']}h old)."
+        f"{nav_status}"
     )
 
 

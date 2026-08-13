@@ -8,6 +8,7 @@ import re
 import stat
 import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("tor-mcp.sessions")
@@ -72,6 +73,20 @@ def _read_private_json(path: Path) -> dict:
         os.close(descriptor)
 
 
+def _is_expired(data: dict) -> bool:
+    """Return True if an auto-saved session has passed its expiry date."""
+    if not data.get("auto_saved"):
+        return False
+    expires_at_raw = data.get("expires_at")
+    if not expires_at_raw:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(expires_at_raw)
+        return datetime.now(UTC) >= expires_at
+    except (ValueError, TypeError):
+        return False
+
+
 class SessionStore:
     """Save and restore browser sessions (cookies + metadata) to disk.
 
@@ -91,24 +106,59 @@ class SessionStore:
     def _session_path(self, name: str) -> Path:
         return self.storage_dir / f"{validate_session_name(name)}.json"
 
-    async def save(self, name: str, cookies: list[dict], url: str = "") -> str:
-        """Save a session (cookies + metadata) to disk."""
-        session_data = {
+    async def save(
+        self,
+        name: str,
+        cookies: list[dict],
+        url: str = "",
+        *,
+        description: str | None = None,
+        auto_save: bool = False,
+    ) -> str:
+        """Save a session (cookies + metadata) to disk.
+
+        When *auto_save* is ``True`` the session is tagged with an expiry
+        date (7 days from now).  An explicit ``save()`` call on an
+        already-auto-saved session converts it to permanent by removing
+        the expiry fields.
+        """
+        now = datetime.now(UTC)
+        path = self._session_path(name)
+
+        # If this is an explicit save on an existing auto-saved session,
+        # convert it to permanent by stripping the auto-save fields.
+        existing_auto_saved = False
+        if not auto_save and path.exists() and not path.is_symlink():
+            try:
+                existing = await asyncio.to_thread(_read_private_json, path)
+                existing_auto_saved = existing.get("auto_saved", False)
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+
+        session_data: dict = {
             "name": name,
             "url": url,
             "saved_at": time.time(),
             "saved_at_human": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            "last_used": now.isoformat(),
             "cookie_count": len(cookies),
             "cookies": cookies,
         }
+        if description is not None:
+            session_data["description"] = description
+        if auto_save:
+            session_data["auto_saved"] = True
+            expires_at = now + timedelta(days=7)
+            session_data["expires_at"] = expires_at.isoformat()
 
-        path = self._session_path(name)
         await asyncio.to_thread(_write_private_json, path, session_data)
         logger.info("Session '%s' saved (%d cookies) to %s", name, len(cookies), path)
+        if existing_auto_saved:
+            return f"Session '{name}' saved with {len(cookies)} cookies (converted to permanent)."
         return f"Session '{name}' saved with {len(cookies)} cookies."
 
     async def load(self, name: str) -> dict | None:
-        """Load a saved session. Returns None if not found."""
+        """Load a saved session. Returns None if not found or expired."""
         path = self._session_path(name)
         if path.is_symlink():
             raise ValueError("Session files must not be symlinks.")
@@ -117,8 +167,20 @@ class SessionStore:
             return None
 
         data = await asyncio.to_thread(_read_private_json, path)
+
+        # Clean up expired auto-saved sessions on access.
+        if _is_expired(data):
+            path.unlink(missing_ok=True)
+            logger.info("Expired auto-saved session '%s' cleaned up on load", name)
+            return None
+
         age_hours = (time.time() - data.get("saved_at", 0)) / 3600
         data["age_hours"] = round(age_hours, 1)
+
+        # Update last_used timestamp.
+        data["last_used"] = datetime.now(UTC).isoformat()
+        await asyncio.to_thread(_write_private_json, path, data)
+
         logger.info(
             "Session '%s' loaded (%d cookies, %.1fh old)",
             name,
@@ -128,23 +190,43 @@ class SessionStore:
         return data
 
     async def list_sessions(self) -> list[dict]:
-        """List all saved sessions with metadata."""
+        """List all saved sessions with metadata.
+
+        Expired auto-saved sessions are deleted during listing and
+        excluded from the result.
+        """
         sessions = []
         for path in sorted(self.storage_dir.glob("*.json")):
             if path.is_symlink():
                 continue
             try:
                 data = await asyncio.to_thread(_read_private_json, path)
+
+                # Clean up expired auto-saved sessions.
+                if _is_expired(data):
+                    path.unlink(missing_ok=True)
+                    logger.info(
+                        "Expired auto-saved session '%s' cleaned up during listing",
+                        data.get("name", path.stem),
+                    )
+                    continue
+
                 age_hours = (time.time() - data.get("saved_at", 0)) / 3600
-                sessions.append(
-                    {
-                        "name": data.get("name", path.stem),
-                        "url": data.get("url", ""),
-                        "saved_at": data.get("saved_at_human", "unknown"),
-                        "age_hours": round(age_hours, 1),
-                        "cookie_count": data.get("cookie_count", 0),
-                    }
-                )
+                entry: dict = {
+                    "name": data.get("name", path.stem),
+                    "url": data.get("url", ""),
+                    "saved_at": data.get("saved_at_human", "unknown"),
+                    "age_hours": round(age_hours, 1),
+                    "cookie_count": data.get("cookie_count", 0),
+                }
+                if data.get("description"):
+                    entry["description"] = data["description"]
+                if data.get("last_used"):
+                    entry["last_used"] = data["last_used"]
+                if data.get("auto_saved"):
+                    entry["auto_saved"] = True
+                    entry["expires_at"] = data.get("expires_at", "")
+                sessions.append(entry)
             except (json.JSONDecodeError, KeyError, OSError, ValueError):
                 continue
         return sessions
