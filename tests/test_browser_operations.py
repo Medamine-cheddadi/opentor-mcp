@@ -69,6 +69,12 @@ class FakePage:
     async def select_option(self, selector, value):
         self.events.append(("select", selector, value))
 
+    async def check(self, selector):
+        self.events.append(("check", selector))
+
+    async def uncheck(self, selector):
+        self.events.append(("uncheck", selector))
+
     async def evaluate(self, script, *args):
         self.events.append(("evaluate", script, args))
         if script == "2 + 2":
@@ -100,6 +106,9 @@ class FakePage:
     async def content(self):
         return "<html><body>page text</body></html>"
 
+    async def close(self):
+        self.events.append(("close",))
+
 
 class FakeContext:
     def __init__(self):
@@ -115,12 +124,19 @@ class FakeContext:
     async def clear_cookies(self):
         self.events.append(("clear",))
 
+    async def new_page(self):
+        page = FakePage()
+        self.events.append(("new_page",))
+        return page
+
 
 @pytest.fixture
 def browser(tmp_path):
     instance = TorBrowser(archives_dir=tmp_path / "archives")
     instance._launched = True
-    instance._page = FakePage()
+    fake_page = FakePage()
+    instance._tabs = {"main": fake_page}
+    instance._active_tab = "main"
     instance._context = FakeContext()
     return instance
 
@@ -527,3 +543,226 @@ def test_navigate_retry_backoff_is_exponential(monkeypatch, browser):
     run(browser.navigate("https://example.com/slow", max_retries=3, retry_backoff=2.0))
 
     assert sleep_delays == [2.0, 4.0, 8.0]
+
+
+# ── Form interaction tests ────────────────────────────────────────
+
+
+def test_fill_form_fills_multiple_fields(browser):
+    result = run(browser.fill_form({"#user": "alice", "#email": "a@b.com"}))
+
+    assert result["success"] is True
+    assert result["filled_count"] == 2
+    assert result["failed_count"] == 0
+    assert result["fields"]["#user"] == "filled"
+    assert result["fields"]["#email"] == "filled"
+    assert ("fill", "#user", "alice") in browser.page.events
+    assert ("fill", "#email", "a@b.com") in browser.page.events
+
+
+def test_fill_form_reports_failure_for_invalid_selector(browser):
+    original_fill = browser.page.fill
+
+    async def selective_fill(selector, value):
+        if selector == "#bad":
+            raise Exception("Element not found: #bad")
+        return await original_fill(selector, value)
+
+    browser.page.fill = selective_fill
+
+    result = run(browser.fill_form({"#good": "val", "#bad": "val2"}))
+
+    assert result["success"] is False
+    assert result["filled_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["fields"]["#good"] == "filled"
+    assert result["fields"]["#bad"] == "failed"
+    assert "#bad" in result["errors"]
+
+
+def test_fill_form_redacts_password_in_error(browser):
+    async def fail_fill(selector, value):
+        raise Exception(f"Cannot fill '{value}' into {selector}")
+
+    browser.page.fill = fail_fill
+
+    result = run(browser.fill_form({"input[type=password]": "s3cret!"}))
+
+    assert result["success"] is False
+    error_msg = result["errors"]["input[type=password]"]
+    assert "s3cret!" not in error_msg
+    assert "[REDACTED]" in error_msg
+
+
+def test_toggle_checkbox_checks_and_unchecks(browser):
+    assert run(browser.toggle_checkbox("#agree", True)) == "Checkbox checked: #agree"
+    assert run(browser.toggle_checkbox("#agree", False)) == "Checkbox unchecked: #agree"
+    assert ("check", "#agree") in browser.page.events
+    assert ("uncheck", "#agree") in browser.page.events
+
+
+# ── Tab lifecycle tests ──────────────────────────────────────────
+
+
+def test_default_launch_creates_main_tab(browser):
+    """Default fixture creates a 'main' tab in the registry."""
+    tabs = browser.list_tabs()
+    assert "main" in tabs
+    assert tabs["main"]["is_active"] is True
+    assert browser._active_tab == "main"
+
+
+def test_open_tab_creates_page_and_sets_active(browser):
+    page = run(browser.open_tab("research"))
+
+    assert "research" in browser._tabs
+    assert browser._active_tab == "research"
+    assert browser._tabs["research"] is page
+    tabs = browser.list_tabs()
+    assert tabs["research"]["is_active"] is True
+    assert tabs["main"]["is_active"] is False
+
+
+def test_switch_tab_changes_active(browser):
+    run(browser.open_tab("second"))
+    assert browser._active_tab == "second"
+
+    result = browser.switch_tab("main")
+    assert browser._active_tab == "main"
+    assert "main" in result
+
+
+def test_close_tab_removes_from_registry(browser):
+    run(browser.open_tab("temp"))
+    assert "temp" in browser._tabs
+
+    result = run(browser.close_tab("temp"))
+    assert "temp" not in browser._tabs
+    assert "closed" in result.lower()
+
+
+def test_close_active_tab_switches_to_remaining(browser):
+    run(browser.open_tab("alt"))
+    browser.switch_tab("alt")
+    assert browser._active_tab == "alt"
+
+    run(browser.close_tab("alt"))
+    assert browser._active_tab == "main"
+
+
+def test_open_tab_duplicate_id_raises(browser):
+    with pytest.raises(ValueError, match="already exists"):
+        run(browser.open_tab("main"))
+
+
+def test_close_last_tab_raises(browser):
+    with pytest.raises(ValueError, match="last remaining"):
+        run(browser.close_tab("main"))
+
+
+def test_open_tab_at_max_limit_raises(tmp_path):
+    instance = TorBrowser(archives_dir=tmp_path / "archives", max_tabs=2)
+    instance._launched = True
+    instance._tabs = {"main": FakePage()}
+    instance._active_tab = "main"
+    instance._context = FakeContext()
+
+    run(instance.open_tab("second"))
+    with pytest.raises(ValueError, match="Tab limit reached"):
+        run(instance.open_tab("third"))
+
+
+def test_get_page_invalid_tab_id_raises(browser):
+    with pytest.raises(ValueError, match="does not exist"):
+        browser.get_page("nonexistent")
+
+
+def test_get_page_returns_active_tab_by_default(browser):
+    page = browser.get_page()
+    assert page is browser._tabs["main"]
+
+
+def test_get_page_returns_specific_tab(browser):
+    run(browser.open_tab("other"))
+    browser.switch_tab("main")
+
+    page = browser.get_page("other")
+    assert page is browser._tabs["other"]
+
+
+def test_get_page_not_launched_raises(tmp_path):
+    instance = TorBrowser(archives_dir=tmp_path / "archives")
+    with pytest.raises(RuntimeError, match="not launched"):
+        instance.get_page()
+
+
+def test_operations_use_active_tab(browser):
+    """Existing operations work unchanged via get_page() defaulting to active tab."""
+    run(browser.open_tab("work"))
+    work_page = browser._tabs["work"]
+
+    result = run(browser.navigate("https://example.com/work"))
+    assert result["url"] == "https://example.com/work"
+    assert ("goto", "https://example.com/work") == work_page.events[0][:2]
+
+
+def test_tab_id_validation_rejects_invalid_names(browser):
+    with pytest.raises(ValueError, match="Invalid"):
+        run(browser.open_tab(""))
+
+    with pytest.raises(ValueError, match="Invalid"):
+        run(browser.open_tab("../escape"))
+
+    with pytest.raises(ValueError, match="Invalid"):
+        run(browser.open_tab("has space"))
+
+
+def test_switch_tab_invalid_raises(browser):
+    with pytest.raises(ValueError, match="does not exist"):
+        browser.switch_tab("missing")
+
+
+def test_close_tab_invalid_raises(browser):
+    with pytest.raises(ValueError, match="does not exist"):
+        run(browser.close_tab("missing"))
+
+
+def test_list_tabs_shows_all_tabs(browser):
+    run(browser.open_tab("alpha"))
+    run(browser.open_tab("beta"))
+
+    tabs = browser.list_tabs()
+    assert len(tabs) == 3
+    assert set(tabs.keys()) == {"main", "alpha", "beta"}
+    # beta is the last opened, so it's active
+    assert tabs["beta"]["is_active"] is True
+    assert tabs["main"]["is_active"] is False
+    assert tabs["alpha"]["is_active"] is False
+
+
+def test_tab_creation_failure_leaves_registry_unchanged(tmp_path):
+    instance = TorBrowser(archives_dir=tmp_path / "archives")
+    instance._launched = True
+    instance._tabs = {"main": FakePage()}
+    instance._active_tab = "main"
+
+    class FailingContext:
+        async def new_page(self):
+            raise RuntimeError("Playwright error")
+
+    instance._context = FailingContext()
+
+    with pytest.raises(RuntimeError, match="Playwright error"):
+        run(instance.open_tab("broken"))
+
+    assert "broken" not in instance._tabs
+    assert instance._active_tab == "main"
+    assert len(instance._tabs) == 1
+
+
+def test_max_tabs_env_var_clamped_to_minimum_one(tmp_path):
+    instance = TorBrowser(archives_dir=tmp_path / "archives", max_tabs=0)
+    assert instance._max_tabs == 1
+
+    instance2 = TorBrowser(archives_dir=tmp_path / "archives2", max_tabs=-5)
+    assert instance2._max_tabs == 1

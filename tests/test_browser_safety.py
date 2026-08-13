@@ -81,7 +81,8 @@ def test_navigate_accepts_http_urls_with_public_or_onion_hosts(tmp_path, url):
 
     browser = TorBrowser(archives_dir=tmp_path)
     browser._launched = True
-    browser._page = Page()
+    browser._tabs = {"main": Page()}
+    browser._active_tab = "main"
 
     assert run(browser.navigate(url))["status"] == 200
 
@@ -139,7 +140,8 @@ def test_query_elements_passes_selector_as_evaluate_argument(tmp_path):
     selector = "a[href=\"x'); globalThis.pwned = true; ('\"]"
     browser = TorBrowser(archives_dir=tmp_path)
     browser._launched = True
-    browser._page = Page()
+    browser._tabs = {"main": Page()}
+    browser._active_tab = "main"
 
     assert run(browser.query_elements(selector)) == []
     assert len(calls) == 1
@@ -271,7 +273,8 @@ def test_tor_connection_check_uses_and_closes_a_temporary_page(tmp_path):
     temporary = TemporaryPage()
     browser = TorBrowser(archives_dir=tmp_path)
     browser._launched = True
-    browser._page = active
+    browser._tabs = {"main": active}
+    browser._active_tab = "main"
     browser._context = Context(temporary)
 
     result = run(browser.check_tor_connection())
@@ -393,7 +396,7 @@ def test_partial_launch_failure_cleans_up_every_created_resource(monkeypatch, tm
     assert context.close_calls == 1
     assert launched_browser.close_calls == 1
     assert playwright.stop_calls == 1
-    assert browser._page is None
+    assert browser._tabs == {}
     assert browser._context is None
     assert browser._browser is None
     assert browser._playwright is None
@@ -408,7 +411,8 @@ def test_close_is_idempotent_and_resets_all_references(tmp_path):
     browser._context = context
     browser._browser = launched_browser
     browser._playwright = playwright
-    browser._page = object()
+    browser._tabs = {"main": object()}
+    browser._active_tab = "main"
     browser._launched = True
 
     run(browser.close())
@@ -417,7 +421,7 @@ def test_close_is_idempotent_and_resets_all_references(tmp_path):
     assert context.close_calls == 1
     assert launched_browser.close_calls == 1
     assert playwright.stop_calls == 1
-    assert browser._page is None
+    assert browser._tabs == {}
     assert browser._context is None
     assert browser._browser is None
     assert browser._playwright is None

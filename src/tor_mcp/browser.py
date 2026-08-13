@@ -1,6 +1,7 @@
 """Privacy-oriented Playwright Firefox browser routed through Tor."""
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import logging
@@ -134,6 +135,24 @@ def _write_private_file(path: Path, data: bytes) -> None:
         os.close(descriptor)
 
 
+def _ensure_directory(path: Path) -> None:
+    """Create a directory with owner-only permissions (blocking I/O)."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+def _validate_and_write_download(
+    downloads_dir: Path, dest: Path, data: bytes,
+) -> None:
+    """Validate the destination path and write file content (blocking I/O)."""
+    if dest.is_symlink():
+        raise ValueError("Download destination must not be a symlink.")
+    resolved_dest = dest.resolve(strict=False)
+    if resolved_dest.parent != downloads_dir.resolve():
+        raise ValueError("Download destination escapes the downloads directory.")
+    _write_private_file(dest, data)
+
+
 class TorBrowser:
     """Playwright Firefox browser routed through a local Tor SOCKS5 proxy."""
 
@@ -146,6 +165,7 @@ class TorBrowser:
         ignore_https_errors: bool = False,
         tor_control_password: str | None = None,
         compatibility_mode: bool = False,
+        max_tabs: int = 5,
     ):
         self.tor_socks_port = tor_socks_port
         self.tor_control_port = tor_control_port
@@ -153,6 +173,7 @@ class TorBrowser:
         self.ignore_https_errors = ignore_https_errors
         self.tor_control_password = tor_control_password
         self.compatibility_mode = compatibility_mode
+        self._max_tabs = max(1, max_tabs)
         self.archives_dir = archives_dir or Path("archives")
         self.archives_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.archives_dir.chmod(0o700)
@@ -160,22 +181,101 @@ class TorBrowser:
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        self._page: Page | None = None
+        self._tabs: dict[str, Page] = {}
+        self._active_tab: str = "main"
         self._launched = False
         self._launch_lock = asyncio.Lock()
-        self.operation_lock = asyncio.Lock()
+
+        # Auto-save state: set via enable_auto_save / disable_auto_save.
+        self._auto_save_session: str | None = None
+        self._auto_save_last_domain: str | None = None
 
     @property
     def page(self) -> Page:
-        if not self._page:
-            raise RuntimeError("Browser not launched. Call launch() first.")
-        return self._page
+        """Return the active tab's page for backward compatibility."""
+        return self.get_page()
 
     @property
     def context(self) -> BrowserContext:
         if not self._context:
             raise RuntimeError("Browser not launched. Call launch() first.")
         return self._context
+
+    def get_page(self, tab_id: str | None = None) -> Page:
+        """Return the Page for *tab_id*, defaulting to the active tab.
+
+        Raises ``RuntimeError`` if the browser is not launched, or
+        ``ValueError`` if the requested tab does not exist.
+        """
+        if not self._tabs:
+            raise RuntimeError("Browser not launched. Call launch() first.")
+        target = tab_id or self._active_tab
+        page = self._tabs.get(target)
+        if page is None:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{target}' does not exist. Available tabs: {available}"
+            )
+        return page
+
+    async def open_tab(self, tab_id: str) -> Page:
+        """Create a new tab and set it as the active tab.
+
+        Raises ``ValueError`` for invalid or duplicate tab IDs, or when
+        the tab limit has been reached.
+        """
+        validate_storage_name(tab_id, kind="tab ID")
+        if tab_id in self._tabs:
+            raise ValueError(f"Tab '{tab_id}' already exists.")
+        if len(self._tabs) >= self._max_tabs:
+            raise ValueError(
+                f"Tab limit reached ({self._max_tabs}). "
+                "Close an existing tab before opening a new one."
+            )
+        await self.ensure_launched()
+        page = await self.context.new_page()
+        self._tabs[tab_id] = page
+        self._active_tab = tab_id
+        return page
+
+    async def close_tab(self, tab_id: str) -> str:
+        """Close a tab and remove it from the registry.
+
+        Cannot close the last remaining tab.  If the closed tab was the
+        active tab, the active tab switches to an arbitrary remaining tab.
+        """
+        if tab_id not in self._tabs:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+            )
+        if len(self._tabs) <= 1:
+            raise ValueError("Cannot close the last remaining tab.")
+        page = self._tabs.pop(tab_id)
+        await page.close()
+        if self._active_tab == tab_id:
+            self._active_tab = next(iter(self._tabs))
+        return f"Tab '{tab_id}' closed."
+
+    def switch_tab(self, tab_id: str) -> str:
+        """Set *tab_id* as the active tab."""
+        if tab_id not in self._tabs:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+            )
+        self._active_tab = tab_id
+        return f"Switched to tab '{tab_id}'."
+
+    def list_tabs(self) -> dict[str, dict]:
+        """Return metadata for every open tab."""
+        result: dict[str, dict] = {}
+        for tid, pg in self._tabs.items():
+            result[tid] = {
+                "url": pg.url,
+                "is_active": tid == self._active_tab,
+            }
+        return result
 
     async def launch(self) -> None:
         """Launch privacy-oriented Firefox routed through Tor."""
@@ -205,7 +305,9 @@ class TorBrowser:
                     ignore_https_errors=self.ignore_https_errors,
                 )
                 await self._context.route("**/*", self._guard_navigation_request)
-                self._page = await self._context.new_page()
+                main_page = await self._context.new_page()
+                self._tabs = {"main": main_page}
+                self._active_tab = "main"
                 self._launched = True
                 logger.info(
                     "Firefox launched through Tor (socks5://127.0.0.1:%d)",
@@ -246,6 +348,7 @@ class TorBrowser:
         wait_selector: str | None = None,
         max_retries: int = 2,
         retry_backoff: float = 2.0,
+        tab_id: str | None = None,
     ) -> dict:
         """Navigate to a URL with configurable wait behaviour.
 
@@ -281,11 +384,17 @@ class TorBrowser:
                 url, timeout=timeout,
                 wait_strategy=wait_strategy,
                 wait_selector=wait_selector,
+                tab_id=tab_id,
             )
 
             if "error" not in result:
                 if rotation_warning and attempt > 0:
                     result["rotation_warning"] = rotation_warning
+                # Trigger auto-save on successful navigation.
+                try:
+                    await self._maybe_auto_save(result.get("url", url))
+                except Exception:
+                    logger.warning("Auto-save failed after navigation", exc_info=True)
                 return result
 
             error = result["error"]
@@ -321,24 +430,26 @@ class TorBrowser:
         timeout: int = 60000,
         wait_strategy: str = "standard",
         wait_selector: str | None = None,
+        tab_id: str | None = None,
     ) -> dict:
         """Execute a single navigation attempt (no retries)."""
         wait_until = "domcontentloaded" if wait_strategy == "fast" else "networkidle"
+        page = self.get_page(tab_id)
 
         try:
-            response = await self.page.goto(
+            response = await page.goto(
                 url, timeout=timeout, wait_until=wait_until,
             )
 
             if wait_strategy == "full" and wait_selector:
                 try:
-                    await self.page.wait_for_selector(
+                    await page.wait_for_selector(
                         wait_selector, timeout=timeout,
                     )
                 except Exception:
                     return {
-                        "url": self.page.url,
-                        "title": await self.page.title(),
+                        "url": page.url,
+                        "title": await page.title(),
                         "status": response.status if response else None,
                         "error": structured_error(
                             TRANSIENT,
@@ -351,8 +462,8 @@ class TorBrowser:
                     }
 
             return {
-                "url": self.page.url,
-                "title": await self.page.title(),
+                "url": page.url,
+                "title": await page.title(),
                 "status": response.status if response else None,
             }
         except Exception as e:
@@ -363,116 +474,180 @@ class TorBrowser:
                 "error": classify_error(e),
             }
 
-    async def go_back(self) -> dict:
+    async def go_back(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.go_back()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.go_back()
+        return {"url": page.url, "title": await page.title()}
 
-    async def go_forward(self) -> dict:
+    async def go_forward(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.go_forward()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.go_forward()
+        return {"url": page.url, "title": await page.title()}
 
-    async def refresh(self) -> dict:
+    async def refresh(self, tab_id: str | None = None) -> dict:
         await self.ensure_launched()
-        await self.page.reload()
-        return {"url": self.page.url, "title": await self.page.title()}
+        page = self.get_page(tab_id)
+        await page.reload()
+        return {"url": page.url, "title": await page.title()}
 
-    async def current_url(self) -> str:
+    async def current_url(self, tab_id: str | None = None) -> str:
         await self.ensure_launched()
-        return self.page.url
+        return self.get_page(tab_id).url
 
     # ── Interaction ─────────────────────────────────────────────
 
-    async def click(self, selector: str, timeout: int = 10000) -> str:
+    async def click(self, selector: str, timeout: int = 10000, tab_id: str | None = None) -> str:
         """Click an element by CSS selector."""
         await self.ensure_launched()
-        await self.page.click(selector, timeout=timeout)
-        await self.page.wait_for_timeout(500)
+        page = self.get_page(tab_id)
+        await page.click(selector, timeout=timeout)
+        await page.wait_for_timeout(500)
         return f"Clicked: {selector}"
 
-    async def type_text(self, selector: str, text: str, delay: int = 50) -> str:
+    async def type_text(
+        self, selector: str, text: str, delay: int = 50, tab_id: str | None = None,
+    ) -> str:
         """Type text into an input field (human-like delay between keystrokes)."""
         await self.ensure_launched()
-        await self.page.fill(selector, "")  # Clear first
-        await self.page.type(selector, text, delay=delay)
+        page = self.get_page(tab_id)
+        await page.fill(selector, "")  # Clear first
+        await page.type(selector, text, delay=delay)
         return f"Typed into: {selector}"
 
-    async def press_key(self, key: str) -> str:
+    async def press_key(self, key: str, tab_id: str | None = None) -> str:
         """Press a keyboard key (Enter, Tab, etc.)."""
         await self.ensure_launched()
-        await self.page.keyboard.press(key)
+        page = self.get_page(tab_id)
+        await page.keyboard.press(key)
         return f"Pressed: {key}"
 
-    async def select_option(self, selector: str, value: str) -> str:
+    async def select_option(self, selector: str, value: str, tab_id: str | None = None) -> str:
         """Select a dropdown option."""
         await self.ensure_launched()
-        await self.page.select_option(selector, value)
+        page = self.get_page(tab_id)
+        await page.select_option(selector, value)
         return f"Selected {value} in {selector}"
 
-    async def scroll(self, direction: str = "down", amount: int = 500) -> str:
+    async def fill_form(self, fields: dict[str, str], tab_id: str | None = None) -> dict:
+        """Fill multiple form fields in one call.
+
+        Returns a dict with per-field results and an overall success flag.
+        Fields whose CSS selector matches a sensitive-field pattern have
+        their values redacted in any error messages.
+        """
+        from tor_mcp.errors import redact_sensitive_values
+
+        await self.ensure_launched()
+        page = self.get_page(tab_id)
+        results: dict[str, str] = {}
+        errors: dict[str, str] = {}
+
+        for selector, value in fields.items():
+            try:
+                await page.fill(selector, value)
+                results[selector] = "filled"
+            except Exception as exc:
+                raw_message = str(exc)
+                message = redact_sensitive_values(
+                    raw_message, context={selector: value},
+                )
+                errors[selector] = message
+                results[selector] = "failed"
+
+        success = len(errors) == 0
+        response: dict = {
+            "success": success,
+            "fields": results,
+            "filled_count": sum(1 for v in results.values() if v == "filled"),
+            "failed_count": len(errors),
+        }
+        if errors:
+            response["errors"] = errors
+        return response
+
+    async def toggle_checkbox(self, selector: str, checked: bool, tab_id: str | None = None) -> str:
+        """Check or uncheck a checkbox element."""
+        await self.ensure_launched()
+        page = self.get_page(tab_id)
+        if checked:
+            await page.check(selector)
+        else:
+            await page.uncheck(selector)
+        state = "checked" if checked else "unchecked"
+        return f"Checkbox {state}: {selector}"
+
+    async def scroll(
+        self, direction: str = "down", amount: int = 500, tab_id: str | None = None,
+    ) -> str:
         """Scroll the page. Direction: up/down/top/bottom."""
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         if direction == "top":
-            await self.page.evaluate("window.scrollTo(0, 0)")
+            await page.evaluate("window.scrollTo(0, 0)")
         elif direction == "bottom":
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         elif direction == "up":
-            await self.page.evaluate("amount => window.scrollBy(0, -amount)", amount)
+            await page.evaluate("amount => window.scrollBy(0, -amount)", amount)
         elif direction == "down":
-            await self.page.evaluate("amount => window.scrollBy(0, amount)", amount)
+            await page.evaluate("amount => window.scrollBy(0, amount)", amount)
         else:
             raise ValueError("Direction must be one of: up, down, top, bottom.")
         return f"Scrolled {direction} by {amount}px"
 
-    async def wait_for(self, selector: str, timeout: int = 10000) -> bool:
+    async def wait_for(
+        self, selector: str, timeout: int = 10000, tab_id: str | None = None,
+    ) -> bool:
         """Wait for an element to appear."""
         await self.ensure_launched()
+        page = self.get_page(tab_id)
         try:
-            await self.page.wait_for_selector(selector, timeout=timeout)
+            await page.wait_for_selector(selector, timeout=timeout)
             return True
         except Exception:
             return False
 
     # ── Reading ─────────────────────────────────────────────────
 
-    async def screenshot(self, full_page: bool = False) -> bytes:
+    async def screenshot(self, full_page: bool = False, tab_id: str | None = None) -> bytes:
         """Take a screenshot, returns PNG bytes."""
         await self.ensure_launched()
-        return await self.page.screenshot(full_page=full_page)
+        return await self.get_page(tab_id).screenshot(full_page=full_page)
 
-    async def screenshot_element(self, selector: str) -> bytes:
+    async def screenshot_element(self, selector: str, tab_id: str | None = None) -> bytes:
         """Screenshot a specific element, returns PNG bytes."""
         await self.ensure_launched()
-        element = await self.page.query_selector(selector)
+        page = self.get_page(tab_id)
+        element = await page.query_selector(selector)
         if not element:
             raise ValueError(f"Element not found: {selector}")
         return await element.screenshot()
 
-    async def get_content(self) -> str:
+    async def get_content(self, tab_id: str | None = None) -> str:
         """Get the page's inner text content."""
         await self.ensure_launched()
-        return await self.page.inner_text("body")
+        return await self.get_page(tab_id).inner_text("body")
 
-    async def get_html(self) -> str:
+    async def get_html(self, tab_id: str | None = None) -> str:
         """Get raw HTML of the page."""
         await self.ensure_launched()
-        return await self.page.content()
+        return await self.get_page(tab_id).content()
 
-    async def get_links(self) -> list[dict]:
+    async def get_links(self, tab_id: str | None = None) -> list[dict]:
         """Extract all links from the page."""
         await self.ensure_launched()
-        return await self.page.evaluate("""
+        return await self.get_page(tab_id).evaluate("""
             () => Array.from(document.querySelectorAll('a[href]')).map(a => ({
                 text: a.innerText.trim().substring(0, 200),
                 href: a.href,
             })).filter(l => l.href && l.text)
         """)
 
-    async def get_page_info(self) -> dict:
+    async def get_page_info(self, tab_id: str | None = None) -> dict:
         """Get current page metadata."""
         await self.ensure_launched()
-        return await self.page.evaluate("""
+        return await self.get_page(tab_id).evaluate("""
             () => ({
                 url: window.location.href,
                 title: document.title,
@@ -485,16 +660,16 @@ class TorBrowser:
             })
         """)
 
-    async def evaluate_js(self, script: str) -> str:
+    async def evaluate_js(self, script: str, tab_id: str | None = None) -> str:
         """Execute JavaScript on the page and return result."""
         await self.ensure_launched()
-        result = await self.page.evaluate(script)
+        result = await self.get_page(tab_id).evaluate(script)
         return str(result)
 
-    async def query_elements(self, selector: str) -> list[dict]:
+    async def query_elements(self, selector: str, tab_id: str | None = None) -> list[dict]:
         """Query elements and return their text + attributes."""
         await self.ensure_launched()
-        return await self.page.evaluate(
+        return await self.get_page(tab_id).evaluate(
             """
             selector => Array.from(document.querySelectorAll(selector)).map((el, i) => ({
                 index: i,
@@ -509,6 +684,52 @@ class TorBrowser:
             }))
         """,
             selector,
+        )
+
+    # ── Auto-save ──────────────────────────────────────────────
+
+    def enable_auto_save(self, session_name: str, current_domain: str | None = None) -> None:
+        """Enable auto-save for *session_name*.
+
+        When enabled, navigating to a new domain triggers an automatic
+        session save.  The *current_domain* seeds the last-known domain
+        so the first navigation within the same domain is not saved.
+        """
+        self._auto_save_session = session_name
+        self._auto_save_last_domain = current_domain
+
+    def disable_auto_save(self) -> None:
+        """Disable auto-save."""
+        self._auto_save_session = None
+        self._auto_save_last_domain = None
+
+    async def _maybe_auto_save(self, new_url: str) -> None:
+        """Trigger an auto-save if the domain changed since the last save."""
+        if not self._auto_save_session:
+            return
+
+        new_domain = urlsplit(new_url).hostname or ""
+        if self._auto_save_last_domain and new_domain == self._auto_save_last_domain:
+            return
+
+        # Import here to avoid a circular import at module level.
+        from tor_mcp.sessions import SessionStore
+
+        self._auto_save_last_domain = new_domain
+        cookies = await self.get_cookies()
+
+        # Use a one-off SessionStore pointed at the default storage dir.
+        # The server layer injects the real store; this is a fallback.
+        if not hasattr(self, "_auto_save_store") or self._auto_save_store is None:
+            return
+        store: SessionStore = self._auto_save_store
+        await store.save(
+            self._auto_save_session, cookies, new_url, auto_save=True,
+        )
+        logger.info(
+            "Auto-saved session '%s' on domain change to %s",
+            self._auto_save_session,
+            new_domain,
         )
 
     # ── Cookies / Session ───────────────────────────────────────
@@ -599,7 +820,7 @@ class TorBrowser:
 
     # ── Archive ─────────────────────────────────────────────────
 
-    async def archive_page(self, name: str) -> str:
+    async def archive_page(self, name: str, tab_id: str | None = None) -> str:
         """Save current page content and screenshot to archives."""
         validate_storage_name(name, kind="archive name")
         archive_root = self.archives_dir.resolve()
@@ -615,23 +836,23 @@ class TorBrowser:
         archive_dir.chmod(0o700)
 
         # Save HTML
-        html = await self.get_html()
+        html = await self.get_html(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file, archive_dir / "page.html", html.encode("utf-8")
         )
 
         # Save text content
-        text = await self.get_content()
+        text = await self.get_content(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file, archive_dir / "content.txt", text.encode("utf-8")
         )
 
         # Save screenshot
-        screenshot = await self.screenshot(full_page=True)
+        screenshot = await self.screenshot(full_page=True, tab_id=tab_id)
         await asyncio.to_thread(_write_private_file, archive_dir / "screenshot.png", screenshot)
 
         # Save metadata
-        info = await self.get_page_info()
+        info = await self.get_page_info(tab_id=tab_id)
         await asyncio.to_thread(
             _write_private_file,
             archive_dir / "metadata.json",
@@ -639,6 +860,116 @@ class TorBrowser:
         )
 
         return f"Archived to {archive_dir}"
+
+    # ── Downloads ───────────────────────────────────────────────
+
+    async def download_file(
+        self,
+        url: str,
+        downloads_dir: Path,
+        *,
+        filename_hint: str | None = None,
+        max_bytes: int = 52428800,
+        allowed_types: frozenset[str] = frozenset(),
+        tab_id: str | None = None,
+    ) -> dict:
+        """Download a file through the Tor proxy and save it locally.
+
+        The download is performed via an explicit HTTP request using a
+        temporary page — only triggered by a direct tool invocation,
+        never by page content.
+
+        Returns a dict with the saved path, filename, size, and MIME type.
+        """
+        validate_navigation_url(url)
+        await self.ensure_launched()
+
+        # Ensure the downloads directory exists with restrictive permissions.
+        await asyncio.to_thread(_ensure_directory, downloads_dir)
+
+        # Use a temporary page so the active tab is unaffected.
+        temp_page = await self.context.new_page()
+        try:
+            response = await temp_page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            if response is None:
+                raise ValueError("No response received from the download URL.")
+
+            status = response.status
+            if status < 200 or status >= 300:
+                raise ValueError(f"Download failed with HTTP status {status}.")
+
+            # MIME filtering — check Content-Type header.
+            content_type_header = response.headers.get("content-type", "")
+            mime_type = content_type_header.split(";")[0].strip().lower()
+            if allowed_types and mime_type not in allowed_types:
+                raise ValueError(
+                    f"MIME type '{mime_type}' is not in the allowed list. "
+                    f"Allowed: {', '.join(sorted(allowed_types))}"
+                )
+
+            body = await response.body()
+
+            # Size limit enforcement.
+            if len(body) > max_bytes:
+                raise ValueError(
+                    f"File size ({len(body)} bytes) exceeds the limit "
+                    f"({max_bytes} bytes)."
+                )
+
+            # Derive a safe filename.
+            filename = self._safe_download_filename(url, filename_hint)
+
+            # Validate and write the file in a worker thread.
+            dest = downloads_dir / filename
+            await asyncio.to_thread(
+                _validate_and_write_download, downloads_dir, dest, body,
+            )
+
+            return {
+                "path": str(dest),
+                "filename": filename,
+                "size_bytes": len(body),
+                "mime_type": mime_type,
+            }
+        finally:
+            await temp_page.close()
+
+    @staticmethod
+    def _safe_download_filename(url: str, hint: str | None) -> str:
+        """Derive a safe, single-component filename from a hint or URL.
+
+        Strips path traversal components, validates against
+        ``SAFE_NAME_PATTERN`` (with an extension appended), and falls
+        back to a hash-based name when the hint is unusable.
+        """
+        candidate: str | None = None
+
+        if hint:
+            # Strip any directory components — only the basename matters.
+            candidate = os.path.basename(hint)
+
+        if not candidate:
+            # Try to extract a filename from the URL path.
+            path_part = urlsplit(url).path
+            candidate = os.path.basename(path_part) if path_part else None
+
+        if candidate:
+            # Separate stem and extension.
+            stem, _, ext = candidate.rpartition(".")
+            if not stem:
+                stem = candidate
+                ext = ""
+            # Sanitize stem to safe characters.
+            stem = re.sub(r"[^A-Za-z0-9_-]", "_", stem)[:60]
+            if ext:
+                ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:10]
+
+            if stem and SAFE_NAME_PATTERN.fullmatch(stem):
+                return f"{stem}.{ext}" if ext else stem
+
+        # Fallback: hash-based filename.
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+        return f"download_{url_hash}"
 
     # ── Lifecycle ───────────────────────────────────────────────
 
@@ -650,7 +981,8 @@ class TorBrowser:
     async def _cleanup_resources(self) -> None:
         """Close any fully or partially initialized Playwright resources."""
         context, browser, playwright = self._context, self._browser, self._playwright
-        self._page = None
+        self._tabs = {}
+        self._active_tab = "main"
         self._context = None
         self._browser = None
         self._playwright = None

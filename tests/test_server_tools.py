@@ -34,10 +34,10 @@ class _ScreenshotBrowser:
         self.image = image
         self.element_selector = None
 
-    async def screenshot(self, full_page=False):
+    async def screenshot(self, full_page=False, tab_id=None):
         return self.image
 
-    async def screenshot_element(self, selector):
+    async def screenshot_element(self, selector, tab_id=None):
         self.element_selector = selector
         return self.image
 
@@ -88,6 +88,11 @@ class _LaunchOrderingBrowser:
 
     @property
     def page(self):
+        assert self.launched, "the tool accessed page before ensure_launched()"
+        self.events.append("page")
+        return self._page
+
+    def get_page(self, tab_id=None):
         assert self.launched, "the tool accessed page before ensure_launched()"
         self.events.append("page")
         return self._page
@@ -164,19 +169,19 @@ class _ReadingBrowser:
         self.elements = [{"index": index, "text": f"Element {index}"} for index in range(count)]
         self.navigated_to = None
 
-    async def get_html(self):
+    async def get_html(self, tab_id=None):
         return "<html><head><title>Long</title></head><body>" + ("word " * 5000) + "</body></html>"
 
-    async def current_url(self):
+    async def current_url(self, tab_id=None):
         return "https://example.com/long"
 
-    async def get_page_info(self):
+    async def get_page_info(self, tab_id=None):
         return {"title": "Long", "url": "https://example.com/long"}
 
-    async def get_links(self):
+    async def get_links(self, tab_id=None):
         return self.links
 
-    async def query_elements(self, selector):
+    async def query_elements(self, selector, tab_id=None):
         return self.elements
 
     async def navigate(
@@ -233,8 +238,11 @@ def test_query_elements_supports_offset_limit_and_clamps_limit(monkeypatch):
 
 
 class _HtmlBrowser:
-    async def get_html(self):
+    async def get_html(self, tab_id=None):
         return "<html></html>"
+
+    async def get_content(self, tab_id=None):
+        return ""
 
 
 @pytest.mark.parametrize(
@@ -307,7 +315,7 @@ def test_javascript_evaluation_is_denied_unless_explicitly_enabled(monkeypatch):
         def __init__(self):
             self.calls = []
 
-        async def evaluate_js(self, script):
+        async def evaluate_js(self, script, tab_id=None):
             self.calls.append(script)
             return "evaluated"
 
@@ -328,7 +336,7 @@ class _WaitBrowser:
     def __init__(self, found=True):
         self._found = found
 
-    async def wait_for(self, selector, timeout=10000):
+    async def wait_for(self, selector, timeout=10000, tab_id=None):
         return self._found
 
 
@@ -425,6 +433,12 @@ def test_rotate_circuit_tool_returns_failure(monkeypatch):
         ("tor_delete_session", False, True, False),
         ("tor_list_sessions", True, False, False),
         ("tor_search", False, False, True),
+        ("tor_select_option", False, True, True),
+        ("tor_fill_form", False, True, True),
+        ("tor_toggle_checkbox", False, True, True),
+        ("tor_open_tab", False, False, False),
+        ("tor_close_tab", False, True, False),
+        ("tor_list_tabs", True, False, False),
     ],
 )
 def test_tools_publish_safety_annotations(tool_name, read_only, destructive, open_world):
@@ -435,3 +449,279 @@ def test_tools_publish_safety_annotations(tool_name, read_only, destructive, ope
     assert tool.annotations.read_only_hint is read_only
     assert tool.annotations.destructive_hint is destructive
     assert tool.annotations.open_world_hint is open_world
+
+
+# ── Form interaction tool tests ───────────────────────────────────
+
+
+class _SelectBrowser:
+    async def select_option(self, selector, value, tab_id=None):
+        return f"Selected {value} in {selector}"
+
+
+def test_select_option_tool_delegates_to_browser(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _SelectBrowser())
+
+    result = run(server.tor_select_option("select#country", "US"))
+
+    assert "Selected US in select#country" in result
+
+
+class _FillFormBrowser:
+    def __init__(self, fail_selector=None):
+        self._fail_selector = fail_selector
+
+    async def fill_form(self, fields, tab_id=None):
+        results = {}
+        errors = {}
+        for selector, _value in fields.items():
+            if selector == self._fail_selector:
+                errors[selector] = f"Element not found: {selector}"
+                results[selector] = "failed"
+            else:
+                results[selector] = "filled"
+        response = {
+            "success": len(errors) == 0,
+            "fields": results,
+            "filled_count": sum(1 for v in results.values() if v == "filled"),
+            "failed_count": len(errors),
+        }
+        if errors:
+            response["errors"] = errors
+        return response
+
+
+def test_fill_form_tool_fills_multiple_fields(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _FillFormBrowser())
+
+    result = json.loads(run(server.tor_fill_form({"#user": "alice", "#pass": "pw"})))
+
+    assert result["success"] is True
+    assert result["filled_count"] == 2
+    assert result["failed_count"] == 0
+
+
+def test_fill_form_tool_reports_partial_failure(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _FillFormBrowser(fail_selector="#bad"))
+
+    result = json.loads(run(server.tor_fill_form({"#good": "val", "#bad": "val2"})))
+
+    assert result["success"] is False
+    assert result["filled_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["fields"]["#good"] == "filled"
+    assert result["fields"]["#bad"] == "failed"
+    assert "#bad" in result["errors"]
+
+
+class _ToggleBrowser:
+    async def toggle_checkbox(self, selector, checked, tab_id=None):
+        state = "checked" if checked else "unchecked"
+        return f"Checkbox {state}: {selector}"
+
+
+def test_toggle_checkbox_tool_checks(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _ToggleBrowser())
+
+    result = run(server.tor_toggle_checkbox("#agree", checked=True))
+
+    assert "Checkbox checked: #agree" in result
+
+
+def test_toggle_checkbox_tool_unchecks(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _ToggleBrowser())
+
+    result = run(server.tor_toggle_checkbox("#agree", checked=False))
+
+    assert "Checkbox unchecked: #agree" in result
+
+
+# ── Tab management tool tests ───────────────────────────────────
+
+
+class _TabBrowser:
+    """Fake browser supporting tab lifecycle operations."""
+
+    def __init__(self):
+        self._tabs = {"main": True}
+        self._active = "main"
+
+    async def open_tab(self, tab_id):
+        if tab_id in self._tabs:
+            raise ValueError(f"Tab '{tab_id}' already exists.")
+        self._tabs[tab_id] = True
+        self._active = tab_id
+
+    async def close_tab(self, tab_id):
+        if tab_id not in self._tabs:
+            available = ", ".join(sorted(self._tabs))
+            raise ValueError(
+                f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+            )
+        if len(self._tabs) <= 1:
+            raise ValueError("Cannot close the last remaining tab.")
+        del self._tabs[tab_id]
+        if self._active == tab_id:
+            self._active = next(iter(self._tabs))
+        return f"Tab '{tab_id}' closed."
+
+    def list_tabs(self):
+        return {
+            tid: {"url": "about:blank", "is_active": tid == self._active}
+            for tid in self._tabs
+        }
+
+    async def get_html(self, tab_id=None):
+        return "<html><head><title>Tab</title></head><body>content</body></html>"
+
+    async def get_page_info(self, tab_id=None):
+        return {"title": "Tab", "url": "https://example.com/tab"}
+
+    async def navigate(self, url, timeout=60000, **kwargs):
+        return {"url": url, "title": "Navigated", "status": 200}
+
+    async def get_links(self, tab_id=None):
+        return []
+
+
+def test_open_tab_creates_and_activates(monkeypatch):
+    server = server_module()
+    browser = _TabBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    result = json.loads(run(server.tor_open_tab("research")))
+
+    assert result["opened"] == "research"
+    assert result["is_active"] is True
+    assert "research" in browser._tabs
+
+
+def test_close_tab_removes_tab(monkeypatch):
+    server = server_module()
+    browser = _TabBrowser()
+    browser._tabs["second"] = True
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    result = json.loads(run(server.tor_close_tab("second")))
+
+    assert result["closed"] == "second"
+    assert "second" not in browser._tabs
+
+
+def test_close_last_tab_raises_error(monkeypatch):
+    server = server_module()
+    browser = _TabBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    with pytest.raises(ValueError, match="(?i)last remaining"):
+        run(server.tor_close_tab("main"))
+
+
+def test_list_tabs_returns_metadata(monkeypatch):
+    server = server_module()
+    browser = _TabBrowser()
+    browser._tabs["second"] = True
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    result = json.loads(run(server.tor_list_tabs()))
+
+    assert "main" in result
+    assert result["main"]["is_active"] is True
+    assert "second" in result
+    assert result["second"]["is_active"] is False
+
+
+def test_navigate_with_tab_id_passes_through(monkeypatch):
+    server = server_module()
+
+    class _TabNavigateBrowser:
+        def __init__(self):
+            self.last_tab_id = None
+
+        async def navigate(self, url, timeout=60000, **kwargs):
+            self.last_tab_id = kwargs.get("tab_id")
+            return {"url": url, "title": "Test", "status": 200}
+
+    browser = _TabNavigateBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    run(server.tor_navigate("https://example.com", tab_id="research"))
+
+    assert browser.last_tab_id == "research"
+
+
+def test_read_page_with_tab_id_passes_through(monkeypatch):
+    server = server_module()
+
+    class _TabReadBrowser:
+        def __init__(self):
+            self.html_tab_id = None
+            self.info_tab_id = None
+
+        async def get_html(self, tab_id=None):
+            self.html_tab_id = tab_id
+            return "<html><head><title>Test</title></head><body>content</body></html>"
+
+        async def get_page_info(self, tab_id=None):
+            self.info_tab_id = tab_id
+            return {"title": "Test", "url": "https://example.com"}
+
+    browser = _TabReadBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    run(server.tor_read_page(tab_id="research"))
+
+    assert browser.html_tab_id == "research"
+    assert browser.info_tab_id == "research"
+
+
+def test_tool_with_invalid_tab_id_raises_value_error(monkeypatch):
+    server = server_module()
+
+    class _StrictTabBrowser:
+        def __init__(self):
+            self._tabs = {"main": True}
+
+        async def get_html(self, tab_id=None):
+            if tab_id and tab_id not in self._tabs:
+                available = ", ".join(sorted(self._tabs))
+                raise ValueError(
+                    f"Tab '{tab_id}' does not exist. Available tabs: {available}"
+                )
+            return "<html></html>"
+
+        async def get_page_info(self, tab_id=None):
+            return {"title": "Test", "url": "https://example.com"}
+
+    browser = _StrictTabBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    with pytest.raises(ValueError, match="does not exist"):
+        run(server.tor_read_page(tab_id="nonexistent"))
+
+
+def test_tool_with_no_tab_id_uses_default(monkeypatch):
+    server = server_module()
+
+    class _DefaultTabBrowser:
+        def __init__(self):
+            self.html_tab_id = "NOT_CALLED"
+
+        async def get_html(self, tab_id=None):
+            self.html_tab_id = tab_id
+            return "<html><head><title>Default</title></head><body>ok</body></html>"
+
+        async def get_page_info(self, tab_id=None):
+            return {"title": "Default", "url": "https://example.com"}
+
+    browser = _DefaultTabBrowser()
+    monkeypatch.setattr(server, "get_browser", lambda: browser)
+
+    run(server.tor_read_page())
+
+    assert browser.html_tab_id is None

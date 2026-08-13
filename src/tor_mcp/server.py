@@ -49,6 +49,18 @@ MAX_IMAGE_BYTES = max(1, int(os.environ.get("TOR_MAX_IMAGE_BYTES", "5000000")))
 MAX_JSON_FIELD_CHARS = max(1, int(os.environ.get("TOR_MAX_JSON_FIELD_CHARS", "4096")))
 TOR_MAX_RETRIES = max(0, int(os.environ.get("TOR_MAX_RETRIES", "2")))
 TOR_RETRY_BACKOFF = max(0.0, float(os.environ.get("TOR_RETRY_BACKOFF", "2.0")))
+TOR_MAX_TABS = max(1, int(os.environ.get("TOR_MAX_TABS", "5")))
+TOR_MAX_DOWNLOAD_BYTES = max(1, int(os.environ.get("TOR_MAX_DOWNLOAD_BYTES", "52428800")))
+TOR_ALLOWED_DOWNLOAD_TYPES = frozenset(
+    t.strip()
+    for t in os.environ.get(
+        "TOR_ALLOWED_DOWNLOAD_TYPES",
+        "application/pdf,image/png,image/jpeg,image/gif,image/webp,"
+        "text/plain,text/csv,application/json",
+    ).split(",")
+    if t.strip()
+)
+DOWNLOADS_DIR = BASE_DIR / "downloads"
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -78,6 +90,7 @@ def get_browser() -> TorBrowser:
             ignore_https_errors=IGNORE_HTTPS_ERRORS,
             tor_control_password=TOR_CONTROL_PASSWORD,
             compatibility_mode=COMPATIBILITY_MODE,
+            max_tabs=TOR_MAX_TABS,
         )
     return _browser
 
@@ -267,10 +280,12 @@ async def tor_navigate(
     timeout: int = 60000,
     wait_strategy: str = "standard",
     wait_selector: str | None = None,
+    tab_id: str | None = None,
 ) -> str:
     result = await get_browser().navigate(
         url, timeout, wait_strategy=wait_strategy, wait_selector=wait_selector,
         max_retries=TOR_MAX_RETRIES, retry_backoff=TOR_RETRY_BACKOFF,
+        tab_id=tab_id,
     )
     if "error" in result:
         error_response = {**result["error"], "url": result.get("url")}
@@ -280,22 +295,22 @@ async def tor_navigate(
 
 @mcp.tool(description="Go back to the previous page.", annotations=NAVIGATE_OPEN)
 @serialized_browser_tool
-async def tor_back() -> str:
-    result = await get_browser().go_back()
+async def tor_back(tab_id: str | None = None) -> str:
+    result = await get_browser().go_back(tab_id=tab_id)
     return _json_result(result, untrusted=True)
 
 
 @mcp.tool(description="Go forward to the next page.", annotations=NAVIGATE_OPEN)
 @serialized_browser_tool
-async def tor_forward() -> str:
-    result = await get_browser().go_forward()
+async def tor_forward(tab_id: str | None = None) -> str:
+    result = await get_browser().go_forward(tab_id=tab_id)
     return _json_result(result, untrusted=True)
 
 
 @mcp.tool(description="Refresh the current page.", annotations=NAVIGATE_OPEN)
 @serialized_browser_tool
-async def tor_refresh() -> str:
-    result = await get_browser().refresh()
+async def tor_refresh(tab_id: str | None = None) -> str:
+    result = await get_browser().refresh(tab_id=tab_id)
     return _json_result(result, untrusted=True)
 
 
@@ -307,11 +322,11 @@ async def tor_refresh() -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_read_page(max_chars: int = 20000) -> str:
+async def tor_read_page(max_chars: int = 20000, tab_id: str | None = None) -> str:
     b = get_browser()
-    html = await b.get_html()
+    html = await b.get_html(tab_id=tab_id)
     extraction = extract_content(html)
-    info = await b.get_page_info()
+    info = await b.get_page_info(tab_id=tab_id)
     header = f"# {info.get('title', 'Untitled')}\n**URL:** {info.get('url', '')}\n\n"
 
     metadata_parts = [f"extraction_quality: {extraction['quality']}"]
@@ -330,8 +345,8 @@ async def tor_read_page(max_chars: int = 20000) -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_screenshot(full_page: bool = False) -> CallToolResult:
-    png_bytes = await get_browser().screenshot(full_page=full_page)
+async def tor_screenshot(full_page: bool = False, tab_id: str | None = None) -> CallToolResult:
+    png_bytes = await get_browser().screenshot(full_page=full_page, tab_id=tab_id)
     return _image_result(png_bytes, {"format": "png", "full_page": full_page})
 
 
@@ -340,8 +355,8 @@ async def tor_screenshot(full_page: bool = False) -> CallToolResult:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_screenshot_element(selector: str) -> CallToolResult:
-    png_bytes = await get_browser().screenshot_element(selector)
+async def tor_screenshot_element(selector: str, tab_id: str | None = None) -> CallToolResult:
+    png_bytes = await get_browser().screenshot_element(selector, tab_id=tab_id)
     return _image_result(png_bytes, {"format": "png", "selector": selector})
 
 
@@ -350,8 +365,8 @@ async def tor_screenshot_element(selector: str) -> CallToolResult:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_get_links(offset: int = 0, limit: int = 100) -> str:
-    links = await get_browser().get_links()
+async def tor_get_links(offset: int = 0, limit: int = 100, tab_id: str | None = None) -> str:
+    links = await get_browser().get_links(tab_id=tab_id)
     return _json_result(_paginate(links, offset, limit), untrusted=True)
 
 
@@ -360,8 +375,8 @@ async def tor_get_links(offset: int = 0, limit: int = 100) -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_get_page_info() -> str:
-    info = await get_browser().get_page_info()
+async def tor_get_page_info(tab_id: str | None = None) -> str:
+    info = await get_browser().get_page_info(tab_id=tab_id)
     return _json_result(info, untrusted=True)
 
 
@@ -370,8 +385,10 @@ async def tor_get_page_info() -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_query_elements(selector: str, offset: int = 0, limit: int = 100) -> str:
-    elements = await get_browser().query_elements(selector)
+async def tor_query_elements(
+    selector: str, offset: int = 0, limit: int = 100, tab_id: str | None = None,
+) -> str:
+    elements = await get_browser().query_elements(selector, tab_id=tab_id)
     return _json_result(_paginate(elements, offset, limit), untrusted=True)
 
 
@@ -380,20 +397,54 @@ async def tor_query_elements(selector: str, offset: int = 0, limit: int = 100) -
 
 @mcp.tool(description="Click an element by CSS selector.", annotations=MUTATE_OPEN)
 @serialized_browser_tool
-async def tor_click(selector: str, timeout: int = 10000) -> str:
-    return await get_browser().click(selector, timeout)
+async def tor_click(selector: str, timeout: int = 10000, tab_id: str | None = None) -> str:
+    return await get_browser().click(selector, timeout, tab_id=tab_id)
 
 
 @mcp.tool(description="Type text into an input field.", annotations=MUTATE_OPEN)
 @serialized_browser_tool
-async def tor_type(selector: str, text: str) -> str:
-    return await get_browser().type_text(selector, text)
+async def tor_type(selector: str, text: str, tab_id: str | None = None) -> str:
+    return await get_browser().type_text(selector, text, tab_id=tab_id)
 
 
 @mcp.tool(description="Press a keyboard key (Enter, Tab, Escape, etc.).", annotations=MUTATE_OPEN)
 @serialized_browser_tool
-async def tor_press_key(key: str) -> str:
-    return await get_browser().press_key(key)
+async def tor_press_key(key: str, tab_id: str | None = None) -> str:
+    return await get_browser().press_key(key, tab_id=tab_id)
+
+
+@mcp.tool(
+    description="Select a dropdown option by CSS selector and value.",
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_select_option(selector: str, value: str, tab_id: str | None = None) -> str:
+    return await get_browser().select_option(selector, value, tab_id=tab_id)
+
+
+@mcp.tool(
+    description=(
+        "Fill multiple form fields in one call. Accepts a dict mapping CSS selectors "
+        "to values. Returns per-field success/failure. Sensitive field values are "
+        "redacted in error messages."
+    ),
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_fill_form(fields: dict[str, str], tab_id: str | None = None) -> str:
+    result = await get_browser().fill_form(fields, tab_id=tab_id)
+    return _json_result(result)
+
+
+@mcp.tool(
+    description="Check or uncheck a checkbox by CSS selector.",
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_toggle_checkbox(
+    selector: str, checked: bool = True, tab_id: str | None = None,
+) -> str:
+    return await get_browser().toggle_checkbox(selector, checked, tab_id=tab_id)
 
 
 @mcp.tool(
@@ -401,8 +452,8 @@ async def tor_press_key(key: str) -> str:
     annotations=NAVIGATE_OPEN,
 )
 @serialized_browser_tool
-async def tor_scroll(direction: str = "down", amount: int = 500) -> str:
-    return await get_browser().scroll(direction, amount)
+async def tor_scroll(direction: str = "down", amount: int = 500, tab_id: str | None = None) -> str:
+    return await get_browser().scroll(direction, amount, tab_id=tab_id)
 
 
 @mcp.tool(
@@ -410,8 +461,8 @@ async def tor_scroll(direction: str = "down", amount: int = 500) -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_wait_for(selector: str, timeout: int = 10000) -> str:
-    found = await get_browser().wait_for(selector, timeout)
+async def tor_wait_for(selector: str, timeout: int = 10000, tab_id: str | None = None) -> str:
+    found = await get_browser().wait_for(selector, timeout, tab_id=tab_id)
     if found:
         return _json_result({"found": True, "selector": selector})
     return _error_result(
@@ -430,12 +481,12 @@ async def tor_wait_for(selector: str, timeout: int = 10000) -> str:
     annotations=MUTATE_OPEN,
 )
 @serialized_browser_tool
-async def tor_evaluate_js(script: str) -> str:
+async def tor_evaluate_js(script: str, tab_id: str | None = None) -> str:
     if not ALLOW_JAVASCRIPT:
         raise PermissionError(
             "JavaScript evaluation is disabled. Set TOR_ALLOW_JAVASCRIPT=true to opt in."
         )
-    return await get_browser().evaluate_js(script)
+    return await get_browser().evaluate_js(script, tab_id=tab_id)
 
 
 # ── Search tools ────────────────────────────────────────────────
@@ -447,16 +498,17 @@ async def tor_evaluate_js(script: str) -> str:
 )
 @serialized_browser_tool
 async def tor_search(
-    query: str, engine: str = "ahmia", max_chars: int = 10000, limit: int = 30
+    query: str, engine: str = "ahmia", max_chars: int = 10000, limit: int = 30,
+    tab_id: str | None = None,
 ) -> str:
     b = get_browser()
     url_template = SEARCH_ENGINES.get(engine, SEARCH_ENGINES["ahmia"])
     search_url = url_template.format(query=quote_plus(query, safe=""))
 
-    nav_result = await b.navigate(search_url, timeout=60000)
-    html = await b.get_html()
+    nav_result = await b.navigate(search_url, timeout=60000, tab_id=tab_id)
+    html = await b.get_html(tab_id=tab_id)
     markdown = html_to_markdown(html)
-    links = await b.get_links()
+    links = await b.get_links(tab_id=tab_id)
 
     bounded_links = links[: _clamp_limit(limit)]
     result = (
@@ -478,12 +530,12 @@ async def tor_search(
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_extract_threads(offset: int = 0, limit: int = 100) -> str:
+async def tor_extract_threads(offset: int = 0, limit: int = 100, tab_id: str | None = None) -> str:
     b = get_browser()
-    html = await b.get_html()
+    html = await b.get_html(tab_id=tab_id)
     threads = extract_forum_threads(html)
     if not threads:
-        text = await b.get_content()
+        text = await b.get_content(tab_id=tab_id)
         return _truncate(
             _untrusted_notice() + "No structured threads detected.\n\n" + text,
             5000,
@@ -493,8 +545,8 @@ async def tor_extract_threads(offset: int = 0, limit: int = 100) -> str:
 
 @mcp.tool(description="Extract a bounded page of forum posts.", annotations=READ_ONLY_OPEN)
 @serialized_browser_tool
-async def tor_extract_posts(offset: int = 0, limit: int = 100) -> str:
-    html = await get_browser().get_html()
+async def tor_extract_posts(offset: int = 0, limit: int = 100, tab_id: str | None = None) -> str:
+    html = await get_browser().get_html(tab_id=tab_id)
     posts = extract_forum_posts(html)
     return _json_result(_paginate(posts, offset, limit), untrusted=True)
 
@@ -511,11 +563,12 @@ async def tor_extract_posts(offset: int = 0, limit: int = 100) -> str:
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
-async def tor_get_captcha(selector: str) -> CallToolResult:
+async def tor_get_captcha(selector: str, tab_id: str | None = None) -> CallToolResult:
     b = get_browser()
     c = get_captcha()
     await b.ensure_launched()
-    result = await c.get_captcha_image(b.page, selector)
+    page = b.get_page(tab_id)
+    result = await c.get_captcha_image(page, selector)
     image_bytes = base64.b64decode(result["image_base64"], validate=True)
     return _image_result(
         image_bytes,
@@ -536,12 +589,14 @@ async def tor_get_captcha(selector: str) -> CallToolResult:
 )
 @serialized_browser_tool
 async def tor_solve_captcha(
-    captcha_img_selector: str, captcha_input_selector: str
+    captcha_img_selector: str, captcha_input_selector: str,
+    tab_id: str | None = None,
 ) -> CallToolResult:
     b = get_browser()
     c = get_captcha()
     await b.ensure_launched()
-    result = await c.solve_captcha_auto(b.page, captcha_img_selector, captcha_input_selector)
+    page = b.get_page(tab_id)
+    result = await c.solve_captcha_auto(page, captcha_img_selector, captcha_input_selector)
     image_bytes = base64.b64decode(result["image_base64"], validate=True)
     metadata = {key: value for key, value in result.items() if key != "image_base64"}
     return _image_result(image_bytes, metadata)
@@ -552,12 +607,25 @@ async def tor_solve_captcha(
 
 @mcp.tool(description="Save current cookies to owner-only local storage.", annotations=MUTATE_LOCAL)
 @serialized_browser_tool
-async def tor_save_session(name: str) -> str:
+async def tor_save_session(
+    name: str,
+    description: str | None = None,
+    auto_save: bool = False,
+) -> str:
     b = get_browser()
     s = get_sessions()
     cookies = await b.get_cookies()
     url = await b.current_url()
-    return await s.save(name, cookies, url)
+    result = await s.save(
+        name, cookies, url, description=description, auto_save=auto_save,
+    )
+    if auto_save:
+        from urllib.parse import urlsplit
+
+        domain = urlsplit(url).hostname or ""
+        b._auto_save_store = s
+        b.enable_auto_save(name, current_domain=domain)
+    return result
 
 
 @mcp.tool(description="Load previously saved cookies into the browser.", annotations=MUTATE_LOCAL)
@@ -569,10 +637,30 @@ async def tor_load_session(name: str) -> str:
     if not data:
         return f"Session '{name}' not found."
     await b.set_cookies(data["cookies"])
+
+    stored_url = data.get("url", "")
+    nav_status = ""
+    if stored_url:
+        try:
+            nav_result = await b.navigate(stored_url)
+            if "error" in nav_result:
+                nav_status = (
+                    f" Navigation to stored URL failed: "
+                    f"{nav_result['error'].get('message', 'unknown error')}."
+                    f" Cookies were still restored."
+                )
+            else:
+                nav_status = f" Navigated to {nav_result.get('url', stored_url)}."
+        except Exception as exc:
+            nav_status = (
+                f" Navigation to stored URL failed: {exc}."
+                f" Cookies were still restored."
+            )
+
     return (
         f"Session '{name}' loaded. "
-        f"{data['cookie_count']} cookies restored ({data['age_hours']}h old). "
-        f"Original URL: {data.get('url', 'unknown')}"
+        f"{data['cookie_count']} cookies restored ({data['age_hours']}h old)."
+        f"{nav_status}"
     )
 
 
@@ -623,6 +711,42 @@ async def tor_check_connection() -> str:
     return _json_result(result, untrusted=True)
 
 
+# ── Tab management tools ────────────────────────────────────
+
+
+@mcp.tool(
+    description="Open a new browser tab and make it the active tab.",
+    annotations=MUTATE_LOCAL,
+)
+@serialized_browser_tool
+async def tor_open_tab(tab_id: str) -> str:
+    await get_browser().open_tab(tab_id)
+    return _json_result({"opened": tab_id, "is_active": True})
+
+
+@mcp.tool(
+    description=(
+        "Close a browser tab. Cannot close the last remaining tab. "
+        "If the closed tab was active, another tab becomes active."
+    ),
+    annotations=DESTRUCTIVE_LOCAL,
+)
+@serialized_browser_tool
+async def tor_close_tab(tab_id: str) -> str:
+    result = await get_browser().close_tab(tab_id)
+    return _json_result({"closed": tab_id, "message": result})
+
+
+@mcp.tool(
+    description="List all open browser tabs with their URL and active status.",
+    annotations=READ_ONLY_LOCAL,
+)
+@serialized_browser_tool
+async def tor_list_tabs() -> str:
+    tabs = get_browser().list_tabs()
+    return _json_result(tabs)
+
+
 # ── Archive tools ───────────────────────────────────────────────
 
 
@@ -631,8 +755,35 @@ async def tor_check_connection() -> str:
     annotations=MUTATE_OPEN,
 )
 @serialized_browser_tool
-async def tor_archive_page(name: str) -> str:
-    return await get_browser().archive_page(name)
+async def tor_archive_page(name: str, tab_id: str | None = None) -> str:
+    return await get_browser().archive_page(name, tab_id=tab_id)
+
+
+# ── Download tools ──────────────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Download a file through Tor to local storage. "
+        "Enforces size limits, MIME type filtering, and filename sanitization."
+    ),
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_download_file(
+    url: str,
+    filename: str | None = None,
+    tab_id: str | None = None,
+) -> str:
+    result = await get_browser().download_file(
+        url,
+        DOWNLOADS_DIR,
+        filename_hint=filename,
+        max_bytes=TOR_MAX_DOWNLOAD_BYTES,
+        allowed_types=TOR_ALLOWED_DOWNLOAD_TYPES,
+        tab_id=tab_id,
+    )
+    return _json_result(result)
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
