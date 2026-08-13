@@ -371,12 +371,20 @@ async def tor_get_links(offset: int = 0, limit: int = 100, tab_id: str | None = 
 
 
 @mcp.tool(
-    description="Get page metadata: URL, title, description, and element counts.",
+    description=(
+        "Get page metadata: URL, title, description, element counts, "
+        "and content_type classification."
+    ),
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
 async def tor_get_page_info(tab_id: str | None = None) -> str:
-    info = await get_browser().get_page_info(tab_id=tab_id)
+    from tor_mcp.extraction import classify_page
+
+    b = get_browser()
+    info = await b.get_page_info(tab_id=tab_id)
+    html = await b.get_html(tab_id=tab_id)
+    info["content_type"] = classify_page(html)
     return _json_result(info, untrusted=True)
 
 

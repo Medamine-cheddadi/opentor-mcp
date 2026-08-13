@@ -17,11 +17,14 @@ def test_session_imports():
 
 def test_extraction_imports():
     from tor_mcp.extraction import (
+        classify_page,
         extract_forum_posts,
         extract_forum_threads,
         extract_metadata,
         html_to_markdown,
     )
+
+    assert callable(classify_page)
 
 
 def test_server_imports():

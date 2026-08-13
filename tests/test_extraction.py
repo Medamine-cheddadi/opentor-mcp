@@ -1,6 +1,7 @@
 """Representative extraction coverage retained alongside the security suite."""
 
 from tor_mcp.extraction import (
+    classify_page,
     extract_content,
     extract_forum_posts,
     extract_forum_threads,
@@ -266,3 +267,182 @@ def test_extract_content_never_raises():
         assert "quality" in result
         assert "content" in result
         assert result["quality"] in ("good", "fair", "poor")
+
+
+# ── Content-type classification tests ─────────────────────────
+
+
+def test_classify_page_article_with_article_tag_and_long_text():
+    html = """
+    <html><body>
+      <article>
+        <h1>Understanding Tor Network Architecture</h1>
+        <p>The Tor network is a sophisticated system designed to provide
+        anonymity on the internet. It works by routing traffic through a
+        series of relays, each of which only knows the previous and next
+        hop in the circuit. This multi-layered encryption approach ensures
+        that no single relay can determine both the origin and destination
+        of the traffic being routed through the network.</p>
+        <h2>How Circuits Work</h2>
+        <p>When a user connects to the Tor network, their client software
+        selects a path through three relays: a guard node, a middle relay,
+        and an exit relay. Each relay peels off one layer of encryption,
+        revealing only the address of the next relay in the chain. This is
+        why the system is called "onion routing" — each layer is removed
+        like peeling an onion.</p>
+        <h2>Guard Nodes</h2>
+        <p>Guard nodes are the first point of contact when connecting to
+        the Tor network. They are selected from a set of long-running,
+        stable relays to reduce the risk of an adversary controlling the
+        entry point to the circuit.</p>
+      </article>
+    </body></html>
+    """
+    assert classify_page(html) == "article"
+
+
+def test_classify_page_forum_with_post_containers_and_metadata():
+    html = """
+    <html><body>
+      <div class="forum">
+        <div class="thread">
+          <a href="/t/1">First thread topic</a>
+          <span class="author">alice</span>
+          <time datetime="2026-08-10">Aug 10</time>
+          <span class="replies">12</span>
+        </div>
+        <div class="thread">
+          <a href="/t/2">Second thread topic</a>
+          <span class="author">bob</span>
+          <time datetime="2026-08-11">Aug 11</time>
+          <span class="replies">5</span>
+        </div>
+        <div class="thread">
+          <a href="/t/3">Third thread topic</a>
+          <span class="author">carol</span>
+          <time datetime="2026-08-12">Aug 12</time>
+        </div>
+        <div class="thread">
+          <a href="/t/4">Fourth thread topic</a>
+          <span class="author">dave</span>
+          <time datetime="2026-08-12">Aug 12</time>
+        </div>
+        <div class="thread">
+          <a href="/t/5">Fifth thread topic</a>
+          <span class="author">eve</span>
+          <time datetime="2026-08-13">Aug 13</time>
+        </div>
+      </div>
+    </body></html>
+    """
+    assert classify_page(html) == "forum"
+
+
+def test_classify_page_login_form_with_password_input():
+    html = """
+    <html><body>
+      <h1>Sign In</h1>
+      <form action="/login" method="post">
+        <label for="user">Username</label>
+        <input type="text" id="user" name="username">
+        <label for="pass">Password</label>
+        <input type="password" id="pass" name="password">
+        <button type="submit">Log in</button>
+      </form>
+    </body></html>
+    """
+    assert classify_page(html) == "login_form"
+
+
+def test_classify_page_directory_listing_with_repeated_links():
+    html = """
+    <html><body>
+      <h1>Index of /files</h1>
+      <ul>
+        <li><a href="report-q1.pdf">report-q1.pdf</a></li>
+        <li><a href="report-q2.pdf">report-q2.pdf</a></li>
+        <li><a href="report-q3.pdf">report-q3.pdf</a></li>
+        <li><a href="report-q4.pdf">report-q4.pdf</a></li>
+        <li><a href="summary.doc">summary.doc</a></li>
+        <li><a href="archive.zip">archive.zip</a></li>
+        <li><a href="notes.txt">notes.txt</a></li>
+      </ul>
+    </body></html>
+    """
+    assert classify_page(html) == "directory_listing"
+
+
+def test_classify_page_search_results():
+    html = """
+    <html><body>
+      <form action="/search">
+        <input type="search" name="q" value="tor network">
+        <button type="submit">Search</button>
+      </form>
+      <div class="search-results">
+        <div class="result">
+          <a href="/r/1">Tor Project Official Site</a>
+          <p>The official website of the Tor Project.</p>
+        </div>
+        <div class="result">
+          <a href="/r/2">Tor Browser Download</a>
+          <p>Download the Tor Browser for secure browsing.</p>
+        </div>
+        <div class="result">
+          <a href="/r/3">How Tor Works</a>
+          <p>An explanation of Tor's onion routing protocol.</p>
+        </div>
+      </div>
+    </body></html>
+    """
+    assert classify_page(html) == "search_results"
+
+
+def test_classify_page_error_page():
+    html = """
+    <html><head><title>404 Not Found</title></head>
+    <body>
+      <h1>404 Not Found</h1>
+      <p>The page you requested could not be found.</p>
+    </body></html>
+    """
+    assert classify_page(html) == "error_page"
+
+
+def test_classify_page_mixed_signals_most_confident_wins():
+    """Page with both an article and a form — article signal is stronger."""
+    html = """
+    <html><body>
+      <article>
+        <h1>Comprehensive Guide to Privacy</h1>
+        <p>This extensive guide covers everything you need to know about
+        maintaining your privacy online. We explore various tools and
+        techniques that are available to protect your digital identity
+        from tracking and surveillance across the modern internet.</p>
+        <h2>Section One: Browser Privacy</h2>
+        <p>Your browser is the primary vector through which your browsing
+        habits and personal information can be collected and analyzed by
+        third parties operating advertising and tracking networks.</p>
+        <h2>Section Two: Network Privacy</h2>
+        <p>Beyond the browser, network-level privacy measures ensure that
+        your internet service provider and other intermediaries cannot
+        easily monitor or log your online activities and connections.</p>
+      </article>
+      <form action="/subscribe">
+        <input type="text" name="email" placeholder="Newsletter signup">
+        <button>Subscribe</button>
+      </form>
+    </body></html>
+    """
+    assert classify_page(html) == "article"
+
+
+def test_classify_page_minimal_empty_returns_unknown():
+    assert classify_page("") == "unknown"
+    assert classify_page("<html><body></body></html>") == "unknown"
+    assert classify_page("   ") == "unknown"
+
+
+def test_classify_page_plain_page_returns_unknown():
+    html = "<html><body><p>Hello world</p></body></html>"
+    assert classify_page(html) == "unknown"
