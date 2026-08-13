@@ -229,10 +229,11 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
 | **Tab management** | 3 | Open, close, and list browser tabs |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
+| **Downloads** | 1 | Download files through Tor with size and MIME filtering |
 | **Tor control and archiving** | 4 | New circuit, circuit rotation, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (35 total) — full reference</strong></summary>
+<summary><strong>Tools (36 total) — full reference</strong></summary>
 
 <br>
 
@@ -311,6 +312,12 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_check_connection` | Check the Tor exit IP without replacing the active page |
 | `tor_archive_page` | Save a private page snapshot beneath the configured archive root |
 
+#### Downloads
+
+| Tool | Description |
+| --- | --- |
+| `tor_download_file` | Download a file through Tor with size limits, MIME filtering, and filename sanitization |
+
 </details>
 
 ## CAPTCHA assistance
@@ -353,6 +360,8 @@ offline. Session and archive directories are ignored by Git.
 | `TOR_MAX_ITEM_LIMIT` | `100` | Maximum items returned by paginated tools |
 | `TOR_MAX_IMAGE_BYTES` | `5000000` | Maximum raw screenshot or CAPTCHA size |
 | `TOR_MAX_JSON_FIELD_CHARS` | `4096` | Maximum retained characters in one web-derived JSON field |
+| `TOR_MAX_DOWNLOAD_BYTES` | `52428800` | Maximum file size for downloads (default 50 MB) |
+| `TOR_ALLOWED_DOWNLOAD_TYPES` | see below | Comma-separated MIME types accepted by `tor_download_file` |
 
 Circuit rotation requires an authenticated Tor control port. A minimal cookie-authentication setup in
 `torrc` is:

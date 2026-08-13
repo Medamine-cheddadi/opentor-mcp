@@ -1,6 +1,7 @@
 """Privacy-oriented Playwright Firefox browser routed through Tor."""
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import logging
@@ -132,6 +133,24 @@ def _write_private_file(path: Path, data: bytes) -> None:
             handle.write(data)
     finally:
         os.close(descriptor)
+
+
+def _ensure_directory(path: Path) -> None:
+    """Create a directory with owner-only permissions (blocking I/O)."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+def _validate_and_write_download(
+    downloads_dir: Path, dest: Path, data: bytes,
+) -> None:
+    """Validate the destination path and write file content (blocking I/O)."""
+    if dest.is_symlink():
+        raise ValueError("Download destination must not be a symlink.")
+    resolved_dest = dest.resolve(strict=False)
+    if resolved_dest.parent != downloads_dir.resolve():
+        raise ValueError("Download destination escapes the downloads directory.")
+    _write_private_file(dest, data)
 
 
 class TorBrowser:
@@ -786,6 +805,116 @@ class TorBrowser:
         )
 
         return f"Archived to {archive_dir}"
+
+    # ── Downloads ───────────────────────────────────────────────
+
+    async def download_file(
+        self,
+        url: str,
+        downloads_dir: Path,
+        *,
+        filename_hint: str | None = None,
+        max_bytes: int = 52428800,
+        allowed_types: frozenset[str] = frozenset(),
+        tab_id: str | None = None,
+    ) -> dict:
+        """Download a file through the Tor proxy and save it locally.
+
+        The download is performed via an explicit HTTP request using a
+        temporary page — only triggered by a direct tool invocation,
+        never by page content.
+
+        Returns a dict with the saved path, filename, size, and MIME type.
+        """
+        validate_navigation_url(url)
+        await self.ensure_launched()
+
+        # Ensure the downloads directory exists with restrictive permissions.
+        await asyncio.to_thread(_ensure_directory, downloads_dir)
+
+        # Use a temporary page so the active tab is unaffected.
+        temp_page = await self.context.new_page()
+        try:
+            response = await temp_page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            if response is None:
+                raise ValueError("No response received from the download URL.")
+
+            status = response.status
+            if status < 200 or status >= 300:
+                raise ValueError(f"Download failed with HTTP status {status}.")
+
+            # MIME filtering — check Content-Type header.
+            content_type_header = response.headers.get("content-type", "")
+            mime_type = content_type_header.split(";")[0].strip().lower()
+            if allowed_types and mime_type not in allowed_types:
+                raise ValueError(
+                    f"MIME type '{mime_type}' is not in the allowed list. "
+                    f"Allowed: {', '.join(sorted(allowed_types))}"
+                )
+
+            body = await response.body()
+
+            # Size limit enforcement.
+            if len(body) > max_bytes:
+                raise ValueError(
+                    f"File size ({len(body)} bytes) exceeds the limit "
+                    f"({max_bytes} bytes)."
+                )
+
+            # Derive a safe filename.
+            filename = self._safe_download_filename(url, filename_hint)
+
+            # Validate and write the file in a worker thread.
+            dest = downloads_dir / filename
+            await asyncio.to_thread(
+                _validate_and_write_download, downloads_dir, dest, body,
+            )
+
+            return {
+                "path": str(dest),
+                "filename": filename,
+                "size_bytes": len(body),
+                "mime_type": mime_type,
+            }
+        finally:
+            await temp_page.close()
+
+    @staticmethod
+    def _safe_download_filename(url: str, hint: str | None) -> str:
+        """Derive a safe, single-component filename from a hint or URL.
+
+        Strips path traversal components, validates against
+        ``SAFE_NAME_PATTERN`` (with an extension appended), and falls
+        back to a hash-based name when the hint is unusable.
+        """
+        candidate: str | None = None
+
+        if hint:
+            # Strip any directory components — only the basename matters.
+            candidate = os.path.basename(hint)
+
+        if not candidate:
+            # Try to extract a filename from the URL path.
+            path_part = urlsplit(url).path
+            candidate = os.path.basename(path_part) if path_part else None
+
+        if candidate:
+            # Separate stem and extension.
+            stem, _, ext = candidate.rpartition(".")
+            if not stem:
+                stem = candidate
+                ext = ""
+            # Sanitize stem to safe characters.
+            stem = re.sub(r"[^A-Za-z0-9_-]", "_", stem)[:60]
+            if ext:
+                ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:10]
+
+            if stem and SAFE_NAME_PATTERN.fullmatch(stem):
+                return f"{stem}.{ext}" if ext else stem
+
+        # Fallback: hash-based filename.
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+        return f"download_{url_hash}"
 
     # ── Lifecycle ───────────────────────────────────────────────
 

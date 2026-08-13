@@ -50,6 +50,17 @@ MAX_JSON_FIELD_CHARS = max(1, int(os.environ.get("TOR_MAX_JSON_FIELD_CHARS", "40
 TOR_MAX_RETRIES = max(0, int(os.environ.get("TOR_MAX_RETRIES", "2")))
 TOR_RETRY_BACKOFF = max(0.0, float(os.environ.get("TOR_RETRY_BACKOFF", "2.0")))
 TOR_MAX_TABS = max(1, int(os.environ.get("TOR_MAX_TABS", "5")))
+TOR_MAX_DOWNLOAD_BYTES = max(1, int(os.environ.get("TOR_MAX_DOWNLOAD_BYTES", "52428800")))
+TOR_ALLOWED_DOWNLOAD_TYPES = frozenset(
+    t.strip()
+    for t in os.environ.get(
+        "TOR_ALLOWED_DOWNLOAD_TYPES",
+        "application/pdf,image/png,image/jpeg,image/gif,image/webp,"
+        "text/plain,text/csv,application/json",
+    ).split(",")
+    if t.strip()
+)
+DOWNLOADS_DIR = BASE_DIR / "downloads"
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -713,6 +724,33 @@ async def tor_list_tabs() -> str:
 @serialized_browser_tool
 async def tor_archive_page(name: str, tab_id: str | None = None) -> str:
     return await get_browser().archive_page(name, tab_id=tab_id)
+
+
+# ── Download tools ──────────────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Download a file through Tor to local storage. "
+        "Enforces size limits, MIME type filtering, and filename sanitization."
+    ),
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_download_file(
+    url: str,
+    filename: str | None = None,
+    tab_id: str | None = None,
+) -> str:
+    result = await get_browser().download_file(
+        url,
+        DOWNLOADS_DIR,
+        filename_hint=filename,
+        max_bytes=TOR_MAX_DOWNLOAD_BYTES,
+        allowed_types=TOR_ALLOWED_DOWNLOAD_TYPES,
+        tab_id=tab_id,
+    )
+    return _json_result(result)
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
