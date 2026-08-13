@@ -1,6 +1,7 @@
 """Representative extraction coverage retained alongside the security suite."""
 
 from tor_mcp.extraction import (
+    extract_content,
     extract_forum_posts,
     extract_forum_threads,
     extract_metadata,
@@ -118,3 +119,150 @@ def test_extract_forum_posts_falls_back_to_page_text():
             "index": 0,
         }
     ]
+
+
+# ── Fallback chain tests ──────────────────────────────────────
+
+
+def test_extract_content_good_html_stops_at_first_strategy():
+    html = """
+    <html><body>
+      <h1>Welcome to the Guide</h1>
+      <p>This is a comprehensive guide to understanding the topic at hand.
+      It covers many important aspects that you should know about.</p>
+      <h2>Section One</h2>
+      <p>The first section introduces the core concepts and foundational
+      principles that underpin the rest of the material presented here.</p>
+      <ul>
+        <li>First important point about the topic</li>
+        <li>Second important point about the topic</li>
+        <li>Third important point about the topic</li>
+      </ul>
+      <h2>Section Two</h2>
+      <p>Building on section one, we explore more advanced themes. This
+      section dives deeper into practical applications and use cases.</p>
+      <a href="/more">Read more about this topic</a>
+    </body></html>
+    """
+
+    result = extract_content(html)
+
+    assert result["quality"] == "good"
+    assert result["strategy"] == "markdownify"
+    assert result["quality_warning"] is None
+    assert "Welcome to the Guide" in result["content"]
+
+
+def test_extract_content_minimal_html_selects_best_result():
+    html = "<html><body><p>Short.</p></body></html>"
+
+    result = extract_content(html)
+
+    assert result["quality"] in ("fair", "poor")
+    assert result["content"]  # non-empty — best effort returned
+    assert "Short" in result["content"]
+
+
+def test_extract_content_empty_html_returns_poor_with_warning():
+    html = "<html><body><script>var x = 1;</script></body></html>"
+
+    result = extract_content(html)
+
+    assert result["quality"] == "poor"
+    assert result["quality_warning"] is not None
+
+
+def test_extract_content_complex_table_preserves_structure():
+    html = """
+    <html><body>
+      <h1>Data Report</h1>
+      <p>Below is the quarterly data summary for the reporting period.</p>
+      <table>
+        <tr><th>Name</th><th>Value</th><th>Change</th></tr>
+        <tr><td>Revenue</td><td>$1.2M</td><td>+15%</td></tr>
+        <tr><td>Users</td><td>50,000</td><td>+22%</td></tr>
+        <tr><td>Retention</td><td>85%</td><td>+3%</td></tr>
+      </table>
+      <p>These results demonstrate strong growth across all key metrics
+      for the current reporting period compared to the previous one.</p>
+    </body></html>
+    """
+
+    result = extract_content(html)
+
+    assert "Revenue" in result["content"]
+    assert "$1.2M" in result["content"]
+    assert "Users" in result["content"]
+
+
+def test_extract_content_nested_lists_preserved():
+    html = """
+    <html><body>
+      <h1>Project Overview</h1>
+      <p>This project consists of several major components and subsystems
+      that work together to deliver the final product.</p>
+      <ul>
+        <li>Frontend
+          <ul>
+            <li>React components for the user interface</li>
+            <li>CSS modules for styling and theming</li>
+          </ul>
+        </li>
+        <li>Backend
+          <ul>
+            <li>API server handling requests</li>
+            <li>Database layer for persistence</li>
+          </ul>
+        </li>
+      </ul>
+    </body></html>
+    """
+
+    result = extract_content(html)
+
+    assert "Frontend" in result["content"]
+    assert "React components" in result["content"]
+    assert "Backend" in result["content"]
+    assert "API server" in result["content"]
+
+
+def test_extract_content_images_include_alt_text():
+    html = """
+    <html><body>
+      <h1>Photo Gallery</h1>
+      <p>A collection of photographs from the recent expedition to document
+      the wildlife and natural landscapes of the region.</p>
+      <img src="/photo1.jpg" alt="Sunset over the mountain range">
+      <img src="/photo2.jpg" alt="River flowing through the valley">
+      <p>These photographs capture the beauty and diversity of the natural
+      environment found in this remarkable conservation area.</p>
+    </body></html>
+    """
+
+    result = extract_content(html)
+
+    assert "Sunset over the mountain range" in result["content"]
+    assert "River flowing through the valley" in result["content"]
+
+
+def test_extract_content_all_empty_returns_empty_with_poor():
+    result = extract_content("")
+
+    assert result["content"] == ""
+    assert result["quality"] == "poor"
+    assert result["quality_warning"] is not None
+
+
+def test_extract_content_never_raises():
+    """Extraction must always return a result, never raise."""
+    for html in [
+        "",
+        "<html></html>",
+        "not even html",
+        "<script>" + "x" * 10000 + "</script>",
+        "<html><body>" + "<div>" * 100 + "</div>" * 100 + "</body></html>",
+    ]:
+        result = extract_content(html)
+        assert "quality" in result
+        assert "content" in result
+        assert result["quality"] in ("good", "fair", "poor")

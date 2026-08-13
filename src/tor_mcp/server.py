@@ -21,6 +21,7 @@ from tor_mcp.browser import TorBrowser
 from tor_mcp.captcha import CaptchaSolver
 from tor_mcp.errors import TRANSIENT, structured_error
 from tor_mcp.extraction import (
+    extract_content,
     extract_forum_posts,
     extract_forum_threads,
     html_to_markdown,
@@ -309,10 +310,19 @@ async def tor_refresh() -> str:
 async def tor_read_page(max_chars: int = 20000) -> str:
     b = get_browser()
     html = await b.get_html()
-    markdown = html_to_markdown(html, base_url=await b.current_url())
+    extraction = extract_content(html)
     info = await b.get_page_info()
     header = f"# {info.get('title', 'Untitled')}\n**URL:** {info.get('url', '')}\n\n"
-    return _truncate(_untrusted_notice() + header + markdown, max_chars)
+
+    metadata_parts = [f"extraction_quality: {extraction['quality']}"]
+    if extraction.get("quality_warning"):
+        metadata_parts.append(f"quality_warning: {extraction['quality_warning']}")
+    metadata_line = "[" + " | ".join(metadata_parts) + "]\n\n"
+
+    return _truncate(
+        _untrusted_notice() + metadata_line + header + extraction["content"],
+        max_chars,
+    )
 
 
 @mcp.tool(
