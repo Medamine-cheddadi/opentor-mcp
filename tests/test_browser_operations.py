@@ -69,6 +69,12 @@ class FakePage:
     async def select_option(self, selector, value):
         self.events.append(("select", selector, value))
 
+    async def check(self, selector):
+        self.events.append(("check", selector))
+
+    async def uncheck(self, selector):
+        self.events.append(("uncheck", selector))
+
     async def evaluate(self, script, *args):
         self.events.append(("evaluate", script, args))
         if script == "2 + 2":
@@ -527,3 +533,59 @@ def test_navigate_retry_backoff_is_exponential(monkeypatch, browser):
     run(browser.navigate("https://example.com/slow", max_retries=3, retry_backoff=2.0))
 
     assert sleep_delays == [2.0, 4.0, 8.0]
+
+
+# ── Form interaction tests ────────────────────────────────────────
+
+
+def test_fill_form_fills_multiple_fields(browser):
+    result = run(browser.fill_form({"#user": "alice", "#email": "a@b.com"}))
+
+    assert result["success"] is True
+    assert result["filled_count"] == 2
+    assert result["failed_count"] == 0
+    assert result["fields"]["#user"] == "filled"
+    assert result["fields"]["#email"] == "filled"
+    assert ("fill", "#user", "alice") in browser.page.events
+    assert ("fill", "#email", "a@b.com") in browser.page.events
+
+
+def test_fill_form_reports_failure_for_invalid_selector(browser):
+    original_fill = browser.page.fill
+
+    async def selective_fill(selector, value):
+        if selector == "#bad":
+            raise Exception("Element not found: #bad")
+        return await original_fill(selector, value)
+
+    browser.page.fill = selective_fill
+
+    result = run(browser.fill_form({"#good": "val", "#bad": "val2"}))
+
+    assert result["success"] is False
+    assert result["filled_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["fields"]["#good"] == "filled"
+    assert result["fields"]["#bad"] == "failed"
+    assert "#bad" in result["errors"]
+
+
+def test_fill_form_redacts_password_in_error(browser):
+    async def fail_fill(selector, value):
+        raise Exception(f"Cannot fill '{value}' into {selector}")
+
+    browser.page.fill = fail_fill
+
+    result = run(browser.fill_form({"input[type=password]": "s3cret!"}))
+
+    assert result["success"] is False
+    error_msg = result["errors"]["input[type=password]"]
+    assert "s3cret!" not in error_msg
+    assert "[REDACTED]" in error_msg
+
+
+def test_toggle_checkbox_checks_and_unchecks(browser):
+    assert run(browser.toggle_checkbox("#agree", True)) == "Checkbox checked: #agree"
+    assert run(browser.toggle_checkbox("#agree", False)) == "Checkbox unchecked: #agree"
+    assert ("check", "#agree") in browser.page.events
+    assert ("uncheck", "#agree") in browser.page.events

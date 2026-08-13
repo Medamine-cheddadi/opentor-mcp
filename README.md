@@ -224,14 +224,14 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | --- | :---: | --- |
 | **Navigation** | 4 | Move between pages and through history |
 | **Reading** | 6 | Markdown, screenshots, links, metadata, DOM queries |
-| **Interaction** | 6 | Click, type, key press, scroll, element wait, optional JS |
+| **Interaction** | 9 | Click, type, key press, scroll, element wait, optional JS, select, batch fill, checkbox |
 | **Search and extraction** | 3 | Onion search engines and forum extraction |
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
 | **Tor control and archiving** | 3 | New circuit, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (29 total) — full reference</strong></summary>
+<summary><strong>Tools (32 total) — full reference</strong></summary>
 
 <br>
 
@@ -263,6 +263,9 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_type` | Clear and type into an input |
 | `tor_press_key` | Press a keyboard key |
 | `tor_scroll` | Scroll up, down, to the top, or to the bottom |
+| `tor_select_option` | Select a dropdown option by CSS selector and value |
+| `tor_fill_form` | Fill multiple form fields in one call (batch) |
+| `tor_toggle_checkbox` | Check or uncheck a checkbox |
 | `tor_wait_for` | Wait for a CSS selector to appear on the current page |
 | `tor_evaluate_js` | Evaluate page JavaScript when explicitly enabled |
 

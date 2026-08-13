@@ -425,6 +425,9 @@ def test_rotate_circuit_tool_returns_failure(monkeypatch):
         ("tor_delete_session", False, True, False),
         ("tor_list_sessions", True, False, False),
         ("tor_search", False, False, True),
+        ("tor_select_option", False, True, True),
+        ("tor_fill_form", False, True, True),
+        ("tor_toggle_checkbox", False, True, True),
     ],
 )
 def test_tools_publish_safety_annotations(tool_name, read_only, destructive, open_world):
@@ -435,3 +438,93 @@ def test_tools_publish_safety_annotations(tool_name, read_only, destructive, ope
     assert tool.annotations.read_only_hint is read_only
     assert tool.annotations.destructive_hint is destructive
     assert tool.annotations.open_world_hint is open_world
+
+
+# ── Form interaction tool tests ───────────────────────────────────
+
+
+class _SelectBrowser:
+    async def select_option(self, selector, value):
+        return f"Selected {value} in {selector}"
+
+
+def test_select_option_tool_delegates_to_browser(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _SelectBrowser())
+
+    result = run(server.tor_select_option("select#country", "US"))
+
+    assert "Selected US in select#country" in result
+
+
+class _FillFormBrowser:
+    def __init__(self, fail_selector=None):
+        self._fail_selector = fail_selector
+
+    async def fill_form(self, fields):
+        results = {}
+        errors = {}
+        for selector, _value in fields.items():
+            if selector == self._fail_selector:
+                errors[selector] = f"Element not found: {selector}"
+                results[selector] = "failed"
+            else:
+                results[selector] = "filled"
+        response = {
+            "success": len(errors) == 0,
+            "fields": results,
+            "filled_count": sum(1 for v in results.values() if v == "filled"),
+            "failed_count": len(errors),
+        }
+        if errors:
+            response["errors"] = errors
+        return response
+
+
+def test_fill_form_tool_fills_multiple_fields(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _FillFormBrowser())
+
+    result = json.loads(run(server.tor_fill_form({"#user": "alice", "#pass": "pw"})))
+
+    assert result["success"] is True
+    assert result["filled_count"] == 2
+    assert result["failed_count"] == 0
+
+
+def test_fill_form_tool_reports_partial_failure(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _FillFormBrowser(fail_selector="#bad"))
+
+    result = json.loads(run(server.tor_fill_form({"#good": "val", "#bad": "val2"})))
+
+    assert result["success"] is False
+    assert result["filled_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["fields"]["#good"] == "filled"
+    assert result["fields"]["#bad"] == "failed"
+    assert "#bad" in result["errors"]
+
+
+class _ToggleBrowser:
+    async def toggle_checkbox(self, selector, checked):
+        state = "checked" if checked else "unchecked"
+        return f"Checkbox {state}: {selector}"
+
+
+def test_toggle_checkbox_tool_checks(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _ToggleBrowser())
+
+    result = run(server.tor_toggle_checkbox("#agree", checked=True))
+
+    assert "Checkbox checked: #agree" in result
+
+
+def test_toggle_checkbox_tool_unchecks(monkeypatch):
+    server = server_module()
+    monkeypatch.setattr(server, "get_browser", lambda: _ToggleBrowser())
+
+    result = run(server.tor_toggle_checkbox("#agree", checked=False))
+
+    assert "Checkbox unchecked: #agree" in result

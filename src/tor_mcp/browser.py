@@ -410,6 +410,52 @@ class TorBrowser:
         await self.page.select_option(selector, value)
         return f"Selected {value} in {selector}"
 
+    async def fill_form(self, fields: dict[str, str]) -> dict:
+        """Fill multiple form fields in one call.
+
+        Returns a dict with per-field results and an overall success flag.
+        Fields whose CSS selector matches a sensitive-field pattern have
+        their values redacted in any error messages.
+        """
+        from tor_mcp.errors import redact_sensitive_values
+
+        await self.ensure_launched()
+        results: dict[str, str] = {}
+        errors: dict[str, str] = {}
+
+        for selector, value in fields.items():
+            try:
+                await self.page.fill(selector, value)
+                results[selector] = "filled"
+            except Exception as exc:
+                raw_message = str(exc)
+                message = redact_sensitive_values(
+                    raw_message, context={selector: value},
+                )
+                errors[selector] = message
+                results[selector] = "failed"
+
+        success = len(errors) == 0
+        response: dict = {
+            "success": success,
+            "fields": results,
+            "filled_count": sum(1 for v in results.values() if v == "filled"),
+            "failed_count": len(errors),
+        }
+        if errors:
+            response["errors"] = errors
+        return response
+
+    async def toggle_checkbox(self, selector: str, checked: bool) -> str:
+        """Check or uncheck a checkbox element."""
+        await self.ensure_launched()
+        if checked:
+            await self.page.check(selector)
+        else:
+            await self.page.uncheck(selector)
+        state = "checked" if checked else "unchecked"
+        return f"Checkbox {state}: {selector}"
+
     async def scroll(self, direction: str = "down", amount: int = 500) -> str:
         """Scroll the page. Direction: up/down/top/bottom."""
         await self.ensure_launched()

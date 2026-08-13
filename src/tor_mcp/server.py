@@ -397,6 +397,38 @@ async def tor_press_key(key: str) -> str:
 
 
 @mcp.tool(
+    description="Select a dropdown option by CSS selector and value.",
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_select_option(selector: str, value: str) -> str:
+    return await get_browser().select_option(selector, value)
+
+
+@mcp.tool(
+    description=(
+        "Fill multiple form fields in one call. Accepts a dict mapping CSS selectors "
+        "to values. Returns per-field success/failure. Sensitive field values are "
+        "redacted in error messages."
+    ),
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_fill_form(fields: dict[str, str]) -> str:
+    result = await get_browser().fill_form(fields)
+    return _json_result(result)
+
+
+@mcp.tool(
+    description="Check or uncheck a checkbox by CSS selector.",
+    annotations=MUTATE_OPEN,
+)
+@serialized_browser_tool
+async def tor_toggle_checkbox(selector: str, checked: bool = True) -> str:
+    return await get_browser().toggle_checkbox(selector, checked)
+
+
+@mcp.tool(
     description="Scroll the page. Direction: up, down, top, bottom.",
     annotations=NAVIGATE_OPEN,
 )
