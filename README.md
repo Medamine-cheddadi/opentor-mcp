@@ -226,6 +226,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Reading** | 6 | Markdown, screenshots, links, metadata, DOM queries |
 | **Interaction** | 9 | Click, type, key press, scroll, element wait, optional JS, select, batch fill, checkbox |
 | **Search and extraction** | 4 | Onion search engines, forum extraction, and auto-pagination |
+| **Workflow** | 1 | Bounded same-origin site crawl |
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
 | **Tab management** | 3 | Open, close, and list browser tabs |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
@@ -233,7 +234,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Tor control and archiving** | 4 | New circuit, circuit rotation, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (38 total) — full reference</strong></summary>
+<summary><strong>Tools (39 total) — full reference</strong></summary>
 
 <br>
 
@@ -280,6 +281,12 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_extract_posts` | Extract paginated forum posts |
 | `tor_extract_data` | Extract structured JSON from a page using a CSS selector schema |
 | `tor_auto_paginate` | Follow "next page" links automatically and aggregate content across pages |
+
+#### Workflow
+
+| Tool | Description |
+| --- | --- |
+| `tor_crawl_site` | Crawl a site following same-origin internal links up to configurable depth and page limits |
 
 #### CAPTCHA assistance
 

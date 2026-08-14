@@ -861,6 +861,39 @@ class TorBrowser:
 
         return f"Archived to {archive_dir}"
 
+    # ── Crawl helper ──────────────────────────────────────────────
+
+    async def crawl_site(
+        self,
+        url: str,
+        *,
+        timeout: int = 60000,
+        tab_id: str | None = None,
+    ) -> dict:
+        """Navigate to *url* and return data needed for a bounded site crawl.
+
+        Combines navigation, link extraction, and content retrieval into a
+        single call used by the ``tor_crawl_site`` tool.
+
+        Returns a dict with keys ``url``, ``title``, ``html``, and ``links``
+        (list of absolute ``href`` strings) on success.  When navigation
+        fails, the dict contains ``error`` and ``url`` instead.
+        """
+        nav_result = await self.navigate(url, timeout=timeout, tab_id=tab_id)
+        if "error" in nav_result:
+            return {"error": nav_result["error"], "url": url}
+
+        html = await self.get_html(tab_id=tab_id)
+        info = await self.get_page_info(tab_id=tab_id)
+        links = await self.get_links(tab_id=tab_id)
+
+        return {
+            "url": info.get("url", url),
+            "title": info.get("title", ""),
+            "html": html,
+            "links": [link["href"] for link in links],
+        }
+
     # ── Downloads ───────────────────────────────────────────────
 
     async def download_file(

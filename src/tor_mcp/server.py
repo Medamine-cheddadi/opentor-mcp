@@ -10,17 +10,18 @@ import hashlib
 import json
 import logging
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urldefrag, urljoin, urlparse
 
 from mcp.server.mcpserver.server import MCPServer
 from mcp_types import CallToolResult, ContentBlock, ImageContent, TextContent, ToolAnnotations
 
-from tor_mcp.browser import TorBrowser
+from tor_mcp.browser import TorBrowser, validate_navigation_url
 from tor_mcp.captcha import CaptchaSolver
-from tor_mcp.errors import TRANSIENT, structured_error
+from tor_mcp.errors import PERMANENT, TRANSIENT, structured_error
 from tor_mcp.extraction import (
     detect_pagination,
     extract_content,
@@ -936,6 +937,156 @@ async def tor_auto_paginate(
     result_parts.extend(pages_content)
 
     return _truncate("\n".join(result_parts), MAX_RESPONSE_CHARS)
+
+
+# ── Bounded site crawl tool ──────────────────────────────────────
+
+
+def _normalize_crawl_url(url: str) -> str:
+    """Normalize a URL for crawl deduplication.
+
+    Strips fragments and normalizes trailing slashes on the path.
+    """
+    url, _ = urldefrag(url)
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    normalized = parsed._replace(path=path, fragment="")
+    return normalized.geturl()
+
+
+@mcp.tool(
+    description=(
+        "Crawl a site following same-origin internal links up to configurable "
+        "depth and page limits, returning a site map with page summaries. "
+        "max_depth and max_pages are required and capped at TOR_MAX_ITEM_LIMIT."
+    ),
+    annotations=NAVIGATE_OPEN,
+)
+async def tor_crawl_site(
+    start_url: str,
+    max_depth: int,
+    max_pages: int,
+    tab_id: str | None = None,
+) -> str:
+    if max_depth < 1:
+        raise ValueError("max_depth must be at least 1")
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    max_depth = min(max_depth, MAX_ITEM_LIMIT)
+    max_pages = min(max_pages, MAX_ITEM_LIMIT)
+
+    # Validate start URL upfront — permanent failure, no crawl.
+    try:
+        validate_navigation_url(start_url)
+    except ValueError as exc:
+        return _error_result(
+            structured_error(
+                PERMANENT,
+                f"Start URL failed validation: {exc}",
+                "Provide a valid HTTP(S) URL.",
+                retryable=False,
+            )
+        )
+
+    b = get_browser()
+
+    start_parsed = urlparse(start_url)
+    start_origin = (start_parsed.scheme, start_parsed.netloc)
+
+    # BFS state
+    queue: deque[tuple[str, int]] = deque()
+    queue.append((start_url, 0))
+    visited: set[str] = set()
+    site_map: dict[str, dict] = {}
+    external_links: set[str] = set()
+    failed_urls: list[dict] = []
+    skipped_policy: list[str] = []
+
+    while queue and len(site_map) < max_pages:
+        url, depth = queue.popleft()
+
+        normalized = _normalize_crawl_url(url)
+        if normalized in visited:
+            continue
+        visited.add(normalized)
+
+        # Acquire lock per page — released between pages so other tools
+        # can interleave.
+        async with _browser_operation_lock:
+            try:
+                result = await b.crawl_site(url, tab_id=tab_id)
+            except Exception as exc:
+                failed_urls.append({"url": url, "error": str(exc)})
+                continue
+
+        if "error" in result:
+            failed_urls.append({
+                "url": url,
+                "error": result["error"].get("message", "Navigation failed"),
+            })
+            continue
+
+        # Extract content summary (first 500 chars).
+        extraction = extract_content(result["html"])
+        summary = extraction["content"][:500]
+
+        page_url = result["url"]
+        page_links = result["links"]
+
+        site_map[normalized] = {
+            "url": page_url,
+            "title": result["title"],
+            "summary": summary,
+            "depth": depth,
+            "links_found": len(page_links),
+        }
+
+        # Enqueue discovered links if within depth limit.
+        if depth < max_depth:
+            for href in page_links:
+                resolved = urljoin(page_url, href)
+                resolved_normalized = _normalize_crawl_url(resolved)
+
+                if resolved_normalized in visited:
+                    continue
+
+                # Validate URL policy before origin check so that
+                # invalid URLs (bad port, credentials, etc.) are
+                # caught instead of being misclassified as external.
+                try:
+                    validate_navigation_url(resolved)
+                except ValueError:
+                    skipped_policy.append(resolved)
+                    continue
+
+                resolved_parsed = urlparse(resolved)
+                if (resolved_parsed.scheme, resolved_parsed.netloc) != start_origin:
+                    external_links.add(resolved)
+                    continue
+
+                queue.append((resolved, depth + 1))
+
+    if not site_map:
+        return _error_result(
+            structured_error(
+                TRANSIENT,
+                "No pages could be crawled.",
+                "Verify the start URL is accessible and try again.",
+                retryable=True,
+            )
+        )
+
+    payload: dict = {
+        "site_map": site_map,
+        "pages_crawled": len(site_map),
+        "external_links": sorted(external_links),
+    }
+    if failed_urls:
+        payload["failed_urls"] = failed_urls
+    if skipped_policy:
+        payload["skipped_policy_violations"] = skipped_policy
+
+    return _json_result(payload, untrusted=True)
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
