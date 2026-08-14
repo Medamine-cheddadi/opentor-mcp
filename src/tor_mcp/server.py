@@ -64,6 +64,8 @@ TOR_ALLOWED_DOWNLOAD_TYPES = frozenset(
     if t.strip()
 )
 DOWNLOADS_DIR = BASE_DIR / "downloads"
+SNAPSHOTS_DIR = BASE_DIR / "snapshots"
+TOR_MAX_SNAPSHOTS = max(1, int(os.environ.get("TOR_MAX_SNAPSHOTS", "5")))
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -1087,6 +1089,154 @@ async def tor_crawl_site(
         payload["skipped_policy_violations"] = skipped_policy
 
     return _json_result(payload, untrusted=True)
+
+
+# ── Monitoring / comparison tools ───────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Take a named content snapshot of the current page and compare against "
+        "the most recent snapshot with the same name. First call captures a "
+        "baseline; subsequent calls return a structured diff. Snapshots are "
+        "stored locally and rotated to keep the last TOR_MAX_SNAPSHOTS entries."
+    ),
+    annotations=MUTATE_LOCAL,
+)
+@serialized_browser_tool
+async def tor_monitor_page(name: str, tab_id: str | None = None) -> str:
+    result = await get_browser().snapshot_page(
+        name,
+        SNAPSHOTS_DIR,
+        max_snapshots=TOR_MAX_SNAPSHOTS,
+        tab_id=tab_id,
+    )
+
+    status = result["status"]
+
+    if status == "baseline_captured":
+        snap = result["snapshot"]
+        return _json_result({
+            "status": "baseline_captured",
+            "message": "No previous snapshot. Baseline captured.",
+            "url": snap["url"],
+            "title": snap["title"],
+            "timestamp": snap["timestamp"],
+        })
+
+    # status == "compared"
+    diff = result["diff"]
+    snap = result["snapshot"]
+    if diff["added_lines"] == 0 and diff["removed_lines"] == 0:
+        return _json_result({
+            "status": "no_changes",
+            "message": "No changes detected since the previous snapshot.",
+            "url": snap["url"],
+            "title": snap["title"],
+            "timestamp": snap["timestamp"],
+        })
+
+    diff_text = diff["diff_text"]
+    # Truncate diff_text within the response budget.
+    budget = MAX_RESPONSE_CHARS - 500  # reserve room for envelope
+    if len(diff_text) > budget:
+        diff_text = diff_text[:budget] + "\n... (diff truncated)"
+
+    return _json_result({
+        "status": "changes_detected",
+        "url": snap["url"],
+        "title": snap["title"],
+        "timestamp": snap["timestamp"],
+        "added_lines": diff["added_lines"],
+        "removed_lines": diff["removed_lines"],
+        "changed_sections": diff["changed_sections"],
+        "change_percentage": diff["change_percentage"],
+        "diff_text": diff_text,
+    })
+
+
+@mcp.tool(
+    description=(
+        "Compare content between two browser tabs or two URLs. "
+        "Provide either tab_id_a and tab_id_b to compare open tabs, "
+        "or url_a and url_b to navigate to both URLs and compare. "
+        "Returns a structured diff with added/removed lines and change percentage."
+    ),
+    annotations=READ_ONLY_OPEN,
+)
+async def tor_compare_pages(
+    tab_id_a: str | None = None,
+    tab_id_b: str | None = None,
+    url_a: str | None = None,
+    url_b: str | None = None,
+) -> str:
+    has_tabs = tab_id_a is not None and tab_id_b is not None
+    has_urls = url_a is not None and url_b is not None
+
+    if not has_tabs and not has_urls:
+        return _error_result(
+            structured_error(
+                PERMANENT,
+                "Provide either (tab_id_a, tab_id_b) or (url_a, url_b).",
+                "Supply two tab IDs to compare open tabs, or two URLs "
+                "to navigate and compare.",
+                retryable=False,
+            )
+        )
+
+    b = get_browser()
+
+    if has_tabs:
+        async with _browser_operation_lock:
+            html_a = await b.get_html(tab_id=tab_id_a)
+            info_a = await b.get_page_info(tab_id=tab_id_a)
+            html_b = await b.get_html(tab_id=tab_id_b)
+            info_b = await b.get_page_info(tab_id=tab_id_b)
+    else:
+        assert url_a is not None and url_b is not None
+        async with _browser_operation_lock:
+            nav_a = await b.navigate(url_a)
+            if "error" in nav_a:
+                return _error_result(nav_a["error"])
+            html_a = await b.get_html()
+            info_a = await b.get_page_info()
+
+            nav_b = await b.navigate(url_b)
+            if "error" in nav_b:
+                return _error_result(nav_b["error"])
+            html_b = await b.get_html()
+            info_b = await b.get_page_info()
+
+    content_a = extract_content(html_a)["content"]
+    content_b = extract_content(html_b)["content"]
+
+    snap_a = {"content": content_a}
+    snap_b = {"content": content_b}
+
+    from tor_mcp.browser import TorBrowser
+
+    diff = TorBrowser.diff_snapshots(snap_a, snap_b)
+
+    diff_text = diff["diff_text"]
+    budget = MAX_RESPONSE_CHARS - 500
+    if len(diff_text) > budget:
+        diff_text = diff_text[:budget] + "\n... (diff truncated)"
+
+    return _json_result({
+        "page_a": {
+            "url": info_a.get("url", ""),
+            "title": info_a.get("title", ""),
+        },
+        "page_b": {
+            "url": info_b.get("url", ""),
+            "title": info_b.get("title", ""),
+        },
+        "added_lines": diff["added_lines"],
+        "removed_lines": diff["removed_lines"],
+        "changed_sections": diff["changed_sections"],
+        "change_percentage": diff["change_percentage"],
+        "diff_text": diff_text,
+    })
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
