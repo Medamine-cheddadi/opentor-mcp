@@ -233,7 +233,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Tor control and archiving** | 4 | New circuit, circuit rotation, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (36 total) — full reference</strong></summary>
+<summary><strong>Tools (37 total) — full reference</strong></summary>
 
 <br>
 
@@ -278,6 +278,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_search` | Search with Ahmia, Torch, DuckDuckGo, or Haystack |
 | `tor_extract_threads` | Extract paginated forum thread listings |
 | `tor_extract_posts` | Extract paginated forum posts |
+| `tor_extract_data` | Extract structured JSON from a page using a CSS selector schema |
 
 #### CAPTCHA assistance
 

@@ -794,6 +794,28 @@ async def tor_download_file(
     return _json_result(result)
 
 
+# ── Structured extraction tool ─────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Extract structured JSON from the current page using a schema of "
+        "CSS selectors. Schema maps field names to selectors; append ' *' "
+        "to a selector to extract all matches as a list."
+    ),
+    annotations=READ_ONLY_OPEN,
+)
+@serialized_browser_tool
+async def tor_extract_data(
+    schema: dict[str, str], tab_id: str | None = None,
+) -> str:
+    from tor_mcp.structured import extract_structured
+
+    html = await get_browser().get_html(tab_id=tab_id)
+    result = extract_structured(html, schema)
+    return _json_result(result, untrusted=True)
+
+
 # ── Entrypoint ──────────────────────────────────────────────────
 
 
