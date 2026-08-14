@@ -512,3 +512,262 @@ def extract_metadata(html: str) -> dict:
         "og_image": meta("og:image"),
         "canonical": canonical["href"] if canonical else None,
     }
+
+
+# ── Pagination detection ─────────────────────────────────────
+
+_NEXT_LINK_PATTERNS = re.compile(
+    r"^(next|next\s*page|next\s*→|→|»|›|older|more|forward)$",
+    re.IGNORECASE,
+)
+
+
+def detect_pagination(html: str) -> str | None:
+    """Detect a 'next page' link and return its URL, or ``None``."""
+    if not html:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    link_next = soup.find("link", rel="next", href=True)
+    if link_next:
+        return str(link_next["href"])
+
+    for anchor in soup.find_all("a", href=True):
+        text = anchor.get_text(strip=True)
+        if text and _NEXT_LINK_PATTERNS.fullmatch(text):
+            return str(anchor["href"])
+
+    a_rel_next = soup.find("a", rel="next", href=True)
+    if a_rel_next:
+        return str(a_rel_next["href"])
+
+    return None
+
+
+# ── Content-type classification ───────────────────────────────
+
+
+def classify_page(html: str) -> str:
+    """Classify a page by content type using local heuristic HTML analysis.
+
+    Returns one of: ``"article"``, ``"forum"``, ``"search_results"``,
+    ``"login_form"``, ``"directory_listing"``, ``"error_page"``, ``"unknown"``.
+
+    Each heuristic returns a confidence score (0.0–1.0).  The category with the
+    highest score wins, provided it exceeds a minimum threshold.  When no
+    category is confident enough the function returns ``"unknown"``.
+    """
+    if not html or not html.strip():
+        return "unknown"
+
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.body or soup
+
+    scores: dict[str, float] = {
+        "login_form": _score_login_form(body),
+        "error_page": _score_error_page(body, html),
+        "search_results": _score_search_results(body),
+        "forum": _score_forum(body),
+        "article": _score_article(body),
+        "directory_listing": _score_directory_listing(body),
+    }
+
+    best_type = max(scores, key=scores.__getitem__)
+    if scores[best_type] < 0.3:
+        return "unknown"
+    return best_type
+
+
+# ── Per-type scoring heuristics ───────────────────────────────
+
+
+def _score_login_form(body) -> float:
+    """<form> with password field is a strong login signal."""
+    score = 0.0
+    forms = body.find_all("form")
+    if not forms:
+        return 0.0
+    for form in forms:
+        password_inputs = form.find_all("input", attrs={"type": "password"})
+        if password_inputs:
+            score = 0.7
+            # Boost if there's also a text/email input (username field)
+            text_inputs = form.find_all(
+                "input", attrs={"type": re.compile(r"^(text|email)$")}
+            )
+            if text_inputs:
+                score = 0.9
+            break
+    return score
+
+
+def _score_error_page(body, html: str) -> float:
+    """HTTP error status codes + error keywords in title/headings."""
+    score = 0.0
+    title_tag = body.find("title") or (body.parent.find("title") if body.parent else None)
+    title_text = title_tag.get_text(strip=True).lower() if title_tag else ""
+
+    headings = body.find_all(re.compile(r"^h[1-3]$"))
+    heading_text = " ".join(h.get_text(strip=True).lower() for h in headings)
+
+    error_patterns = re.compile(
+        r"(404|403|500|502|503)\b|"
+        r"\b(not found|forbidden|internal server error|bad gateway|"
+        r"service unavailable|access denied|page not found|error occurred)\b"
+    )
+
+    if error_patterns.search(title_text):
+        score += 0.5
+    if error_patterns.search(heading_text):
+        score += 0.4
+
+    # Short page with error signal is very likely an error page
+    all_text = body.get_text(strip=True)
+    if len(all_text) < 500 and score > 0:
+        score += 0.2
+
+    return min(1.0, score)
+
+
+def _score_search_results(body) -> float:
+    """Search form + repeated result items."""
+    score = 0.0
+
+    # Search form present
+    search_inputs = body.find_all(
+        "input", attrs={"type": re.compile(r"^(search|text)$")}
+    )
+    search_forms = [
+        inp for inp in search_inputs
+        if inp.find_parent("form") is not None
+    ]
+    if search_forms:
+        score += 0.2
+
+    # Look for search-result-like repeated structures
+    result_selectors = (
+        ".result, .search-result, .search-results li, "
+        ".search-results > div, [class*='result'], [class*='search'] li"
+    )
+    results = body.select(result_selectors)
+    if len(results) >= 3:
+        score += 0.5
+    elif len(results) >= 1:
+        score += 0.2
+
+    # Check for pagination (common in search)
+    pagination = body.select(".pagination, .pager, nav[aria-label*='page'], [class*='pagina']")
+    if pagination:
+        score += 0.1
+
+    return min(1.0, score)
+
+
+def _score_forum(body) -> float:
+    """Repeated .post/.thread/.comment containers with author/date metadata."""
+    score = 0.0
+
+    # Direct forum CSS class matches
+    forum_selectors = (
+        ".thread, .post, .comment, .reply, .topic, "
+        ".threadlist, .discussionListItem, .structItem, "
+        "[class*='thread'], [class*='post'], [class*='comment'], "
+        "[class*='forum'], [class*='topic']"
+    )
+    forum_elements = body.select(forum_selectors)
+
+    if len(forum_elements) >= 5:
+        score += 0.5
+    elif len(forum_elements) >= 2:
+        score += 0.3
+
+    # Author/date metadata near forum elements
+    author_els = body.select(
+        ".author, .username, .user, .poster, "
+        "[class*='author'], [class*='user'], [class*='poster']"
+    )
+    date_els = body.select(
+        "time, .date, .timestamp, [class*='date'], [class*='time']"
+    )
+    if author_els and date_els:
+        score += 0.2
+    elif author_els or date_els:
+        score += 0.1
+
+    # Reply/comment counts
+    reply_els = body.select(
+        ".replies, .comments, .count, [class*='repl'], [class*='comment-count']"
+    )
+    if reply_els:
+        score += 0.1
+
+    return min(1.0, score)
+
+
+def _score_article(body) -> float:
+    """<article> tags or large text blocks with headings."""
+    score = 0.0
+
+    # <article> tag is a strong signal
+    articles = body.find_all("article")
+    if articles:
+        score += 0.3
+
+    # Long text content
+    all_text = body.get_text(strip=True)
+    if len(all_text) > 2000:
+        score += 0.2
+    elif len(all_text) > 500:
+        score += 0.1
+
+    # Multiple headings suggest structured article content
+    headings = body.find_all(re.compile(r"^h[1-6]$"))
+    if len(headings) >= 3:
+        score += 0.2
+    elif len(headings) >= 1:
+        score += 0.1
+
+    # Paragraphs with substantial text
+    paragraphs = body.find_all("p")
+    long_paragraphs = [p for p in paragraphs if len(p.get_text(strip=True)) > 100]
+    if len(long_paragraphs) >= 3:
+        score += 0.2
+    elif len(long_paragraphs) >= 1:
+        score += 0.1
+
+    return min(1.0, score)
+
+
+def _score_directory_listing(body) -> float:
+    """Repeated link lists with uniform structure."""
+    score = 0.0
+
+    # Look for lists containing mostly links
+    for list_tag in body.find_all(["ul", "ol"]):
+        items = list_tag.find_all("li", recursive=False)
+        if len(items) < 5:
+            continue
+        items_with_links = [li for li in items if li.find("a", href=True)]
+        if len(items_with_links) >= len(items) * 0.7:
+            score = max(score, 0.5)
+            # Uniform structure bonus: all items have similar child count
+            child_counts = [len(list(li.children)) for li in items]
+            if child_counts and max(child_counts) - min(child_counts) <= 2:
+                score += 0.2
+
+    # File-listing patterns (common in directory indexes)
+    file_links = body.find_all("a", href=re.compile(r"\.\w{1,5}$"))
+    if len(file_links) >= 5:
+        score += 0.2
+
+    # Table-based directory listing
+    tables = body.find_all("table")
+    for table in tables:
+        rows = table.find_all("tr")
+        if len(rows) >= 5:
+            rows_with_links = [r for r in rows if r.find("a", href=True)]
+            if len(rows_with_links) >= len(rows) * 0.7:
+                score = max(score, 0.5)
+
+    return min(1.0, score)

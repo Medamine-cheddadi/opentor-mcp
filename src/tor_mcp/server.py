@@ -6,21 +6,24 @@ solving (vision relay + local OCR) and persistent session management.
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urldefrag, urljoin, urlparse
 
 from mcp.server.mcpserver.server import MCPServer
 from mcp_types import CallToolResult, ContentBlock, ImageContent, TextContent, ToolAnnotations
 
-from tor_mcp.browser import TorBrowser
+from tor_mcp.browser import TorBrowser, validate_navigation_url
 from tor_mcp.captcha import CaptchaSolver
-from tor_mcp.errors import TRANSIENT, structured_error
+from tor_mcp.errors import PERMANENT, TRANSIENT, structured_error
 from tor_mcp.extraction import (
+    detect_pagination,
     extract_content,
     extract_forum_posts,
     extract_forum_threads,
@@ -61,6 +64,8 @@ TOR_ALLOWED_DOWNLOAD_TYPES = frozenset(
     if t.strip()
 )
 DOWNLOADS_DIR = BASE_DIR / "downloads"
+SNAPSHOTS_DIR = BASE_DIR / "snapshots"
+TOR_MAX_SNAPSHOTS = max(1, int(os.environ.get("TOR_MAX_SNAPSHOTS", "5")))
 
 # ── Dark web search engines ─────────────────────────────────────
 
@@ -371,12 +376,20 @@ async def tor_get_links(offset: int = 0, limit: int = 100, tab_id: str | None = 
 
 
 @mcp.tool(
-    description="Get page metadata: URL, title, description, and element counts.",
+    description=(
+        "Get page metadata: URL, title, description, element counts, "
+        "and content_type classification."
+    ),
     annotations=READ_ONLY_OPEN,
 )
 @serialized_browser_tool
 async def tor_get_page_info(tab_id: str | None = None) -> str:
-    info = await get_browser().get_page_info(tab_id=tab_id)
+    from tor_mcp.extraction import classify_page
+
+    b = get_browser()
+    info = await b.get_page_info(tab_id=tab_id)
+    html = await b.get_html(tab_id=tab_id)
+    info["content_type"] = classify_page(html)
     return _json_result(info, untrusted=True)
 
 
@@ -784,6 +797,446 @@ async def tor_download_file(
         tab_id=tab_id,
     )
     return _json_result(result)
+
+
+# ── Structured extraction tool ─────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Extract structured JSON from the current page using a schema of "
+        "CSS selectors. Schema maps field names to selectors; append ' *' "
+        "to a selector to extract all matches as a list."
+    ),
+    annotations=READ_ONLY_OPEN,
+)
+@serialized_browser_tool
+async def tor_extract_data(
+    schema: dict[str, str], tab_id: str | None = None,
+) -> str:
+    from tor_mcp.structured import extract_structured
+
+    html = await get_browser().get_html(tab_id=tab_id)
+    result = extract_structured(html, schema)
+    return _json_result(result, untrusted=True)
+
+
+# ── Auto-pagination tool ──────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Follow 'next page' links automatically and aggregate content across pages. "
+        "Navigates through paginated content, extracts each page, and returns the "
+        "combined result. max_pages is required and capped at TOR_MAX_ITEM_LIMIT."
+    ),
+    annotations=NAVIGATE_OPEN,
+)
+async def tor_auto_paginate(
+    max_pages: int,
+    tab_id: str | None = None,
+) -> str:
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    max_pages = min(max_pages, MAX_ITEM_LIMIT)
+
+    b = get_browser()
+    pages_content: list[str] = []
+    visited_urls: set[str] = set()
+    content_hashes: set[str] = set()
+    total_chars = 0
+    skipped_pages = 0
+    stopped_reason: str | None = None
+
+    for page_num in range(max_pages):
+        async with _browser_operation_lock:
+            try:
+                info = await b.get_page_info(tab_id=tab_id)
+                current_url = info.get("url", "")
+
+                # Duplicate URL detection
+                if current_url in visited_urls:
+                    stopped_reason = f"Duplicate URL detected on page {page_num + 1}."
+                    break
+                visited_urls.add(current_url)
+
+                # Extract content
+                html = await b.get_html(tab_id=tab_id)
+                extraction = extract_content(html)
+                content = extraction["content"]
+
+                # Content fingerprint dedup (first 200 chars)
+                fingerprint = hashlib.sha256(content[:200].encode()).hexdigest()
+                if fingerprint in content_hashes:
+                    stopped_reason = (
+                        f"Duplicate content detected on page {page_num + 1}."
+                    )
+                    break
+                content_hashes.add(fingerprint)
+
+                # Response budget check
+                page_header = f"\n\n--- Page {page_num + 1} ({current_url}) ---\n\n"
+                page_text = page_header + content
+                if total_chars + len(page_text) > MAX_RESPONSE_CHARS:
+                    if pages_content:
+                        skipped_pages = max_pages - page_num
+                        stopped_reason = (
+                            f"Response budget exceeded. "
+                            f"{skipped_pages} page(s) skipped."
+                        )
+                        break
+                    # First page: truncate to fit
+                    remaining = MAX_RESPONSE_CHARS - total_chars
+                    page_text = page_text[:remaining]
+
+                pages_content.append(page_text)
+                total_chars += len(page_text)
+
+                # Detect next page link
+                next_url = detect_pagination(html)
+                if not next_url:
+                    break
+
+                # Resolve relative URL
+                next_url = urljoin(current_url, next_url)
+
+                # Navigate to next page (still under lock for this page)
+                if page_num < max_pages - 1:
+                    nav_result = await b.navigate(
+                        next_url, timeout=60000, tab_id=tab_id,
+                    )
+                    if "error" in nav_result:
+                        stopped_reason = (
+                            f"Navigation to page {page_num + 2} failed: "
+                            f"{nav_result['error'].get('message', 'unknown error')}. "
+                            f"Returning content collected so far."
+                        )
+                        break
+
+            except Exception as exc:
+                stopped_reason = (
+                    f"Error on page {page_num + 1}: {exc}. "
+                    f"Returning content collected so far."
+                )
+                break
+
+    if not pages_content:
+        return _error_result(
+            structured_error(
+                TRANSIENT,
+                "No pages could be extracted.",
+                "Verify the page has loaded correctly and try again.",
+                retryable=True,
+            )
+        )
+
+    result_parts = [_untrusted_notice()]
+    result_parts.append(f"[Auto-pagination: {len(pages_content)} page(s) collected]")
+    if stopped_reason:
+        result_parts.append(f"[Note: {stopped_reason}]")
+    if max_pages == len(pages_content) and not stopped_reason:
+        result_parts.append(f"[Note: max_pages limit ({max_pages}) reached.]")
+    result_parts.extend(pages_content)
+
+    return _truncate("\n".join(result_parts), MAX_RESPONSE_CHARS)
+
+
+# ── Bounded site crawl tool ──────────────────────────────────────
+
+
+def _normalize_crawl_url(url: str) -> str:
+    """Normalize a URL for crawl deduplication.
+
+    Strips fragments and normalizes trailing slashes on the path.
+    """
+    url, _ = urldefrag(url)
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    normalized = parsed._replace(path=path, fragment="")
+    return normalized.geturl()
+
+
+@mcp.tool(
+    description=(
+        "Crawl a site following same-origin internal links up to configurable "
+        "depth and page limits, returning a site map with page summaries. "
+        "max_depth and max_pages are required and capped at TOR_MAX_ITEM_LIMIT."
+    ),
+    annotations=NAVIGATE_OPEN,
+)
+async def tor_crawl_site(
+    start_url: str,
+    max_depth: int,
+    max_pages: int,
+    tab_id: str | None = None,
+) -> str:
+    if max_depth < 1:
+        raise ValueError("max_depth must be at least 1")
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    max_depth = min(max_depth, MAX_ITEM_LIMIT)
+    max_pages = min(max_pages, MAX_ITEM_LIMIT)
+
+    # Validate start URL upfront — permanent failure, no crawl.
+    try:
+        validate_navigation_url(start_url)
+    except ValueError as exc:
+        return _error_result(
+            structured_error(
+                PERMANENT,
+                f"Start URL failed validation: {exc}",
+                "Provide a valid HTTP(S) URL.",
+                retryable=False,
+            )
+        )
+
+    b = get_browser()
+
+    start_parsed = urlparse(start_url)
+    start_origin = (start_parsed.scheme, start_parsed.netloc)
+
+    # BFS state
+    queue: deque[tuple[str, int]] = deque()
+    queue.append((start_url, 0))
+    visited: set[str] = set()
+    site_map: dict[str, dict] = {}
+    external_links: set[str] = set()
+    failed_urls: list[dict] = []
+    skipped_policy: list[str] = []
+
+    while queue and len(site_map) < max_pages:
+        url, depth = queue.popleft()
+
+        normalized = _normalize_crawl_url(url)
+        if normalized in visited:
+            continue
+        visited.add(normalized)
+
+        # Acquire lock per page — released between pages so other tools
+        # can interleave.
+        async with _browser_operation_lock:
+            try:
+                result = await b.crawl_site(url, tab_id=tab_id)
+            except Exception as exc:
+                failed_urls.append({"url": url, "error": str(exc)})
+                continue
+
+        if "error" in result:
+            failed_urls.append({
+                "url": url,
+                "error": result["error"].get("message", "Navigation failed"),
+            })
+            continue
+
+        # Extract content summary (first 500 chars).
+        extraction = extract_content(result["html"])
+        summary = extraction["content"][:500]
+
+        page_url = result["url"]
+        page_links = result["links"]
+
+        site_map[normalized] = {
+            "url": page_url,
+            "title": result["title"],
+            "summary": summary,
+            "depth": depth,
+            "links_found": len(page_links),
+        }
+
+        # Enqueue discovered links if within depth limit.
+        if depth < max_depth:
+            for href in page_links:
+                resolved = urljoin(page_url, href)
+                resolved_normalized = _normalize_crawl_url(resolved)
+
+                if resolved_normalized in visited:
+                    continue
+
+                # Validate URL policy before origin check so that
+                # invalid URLs (bad port, credentials, etc.) are
+                # caught instead of being misclassified as external.
+                try:
+                    validate_navigation_url(resolved)
+                except ValueError:
+                    skipped_policy.append(resolved)
+                    continue
+
+                resolved_parsed = urlparse(resolved)
+                if (resolved_parsed.scheme, resolved_parsed.netloc) != start_origin:
+                    external_links.add(resolved)
+                    continue
+
+                queue.append((resolved, depth + 1))
+
+    if not site_map:
+        return _error_result(
+            structured_error(
+                TRANSIENT,
+                "No pages could be crawled.",
+                "Verify the start URL is accessible and try again.",
+                retryable=True,
+            )
+        )
+
+    payload: dict = {
+        "site_map": site_map,
+        "pages_crawled": len(site_map),
+        "external_links": sorted(external_links),
+    }
+    if failed_urls:
+        payload["failed_urls"] = failed_urls
+    if skipped_policy:
+        payload["skipped_policy_violations"] = skipped_policy
+
+    return _json_result(payload, untrusted=True)
+
+
+# ── Monitoring / comparison tools ───────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Take a named content snapshot of the current page and compare against "
+        "the most recent snapshot with the same name. First call captures a "
+        "baseline; subsequent calls return a structured diff. Snapshots are "
+        "stored locally and rotated to keep the last TOR_MAX_SNAPSHOTS entries."
+    ),
+    annotations=MUTATE_LOCAL,
+)
+@serialized_browser_tool
+async def tor_monitor_page(name: str, tab_id: str | None = None) -> str:
+    result = await get_browser().snapshot_page(
+        name,
+        SNAPSHOTS_DIR,
+        max_snapshots=TOR_MAX_SNAPSHOTS,
+        tab_id=tab_id,
+    )
+
+    status = result["status"]
+
+    if status == "baseline_captured":
+        snap = result["snapshot"]
+        return _json_result({
+            "status": "baseline_captured",
+            "message": "No previous snapshot. Baseline captured.",
+            "url": snap["url"],
+            "title": snap["title"],
+            "timestamp": snap["timestamp"],
+        })
+
+    # status == "compared"
+    diff = result["diff"]
+    snap = result["snapshot"]
+    if diff["added_lines"] == 0 and diff["removed_lines"] == 0:
+        return _json_result({
+            "status": "no_changes",
+            "message": "No changes detected since the previous snapshot.",
+            "url": snap["url"],
+            "title": snap["title"],
+            "timestamp": snap["timestamp"],
+        })
+
+    diff_text = diff["diff_text"]
+    # Truncate diff_text within the response budget.
+    budget = MAX_RESPONSE_CHARS - 500  # reserve room for envelope
+    if len(diff_text) > budget:
+        diff_text = diff_text[:budget] + "\n... (diff truncated)"
+
+    return _json_result({
+        "status": "changes_detected",
+        "url": snap["url"],
+        "title": snap["title"],
+        "timestamp": snap["timestamp"],
+        "added_lines": diff["added_lines"],
+        "removed_lines": diff["removed_lines"],
+        "changed_sections": diff["changed_sections"],
+        "change_percentage": diff["change_percentage"],
+        "diff_text": diff_text,
+    })
+
+
+@mcp.tool(
+    description=(
+        "Compare content between two browser tabs or two URLs. "
+        "Provide either tab_id_a and tab_id_b to compare open tabs, "
+        "or url_a and url_b to navigate to both URLs and compare. "
+        "Returns a structured diff with added/removed lines and change percentage."
+    ),
+    annotations=READ_ONLY_OPEN,
+)
+async def tor_compare_pages(
+    tab_id_a: str | None = None,
+    tab_id_b: str | None = None,
+    url_a: str | None = None,
+    url_b: str | None = None,
+) -> str:
+    has_tabs = tab_id_a is not None and tab_id_b is not None
+    has_urls = url_a is not None and url_b is not None
+
+    if not has_tabs and not has_urls:
+        return _error_result(
+            structured_error(
+                PERMANENT,
+                "Provide either (tab_id_a, tab_id_b) or (url_a, url_b).",
+                "Supply two tab IDs to compare open tabs, or two URLs "
+                "to navigate and compare.",
+                retryable=False,
+            )
+        )
+
+    b = get_browser()
+
+    if has_tabs:
+        async with _browser_operation_lock:
+            html_a = await b.get_html(tab_id=tab_id_a)
+            info_a = await b.get_page_info(tab_id=tab_id_a)
+            html_b = await b.get_html(tab_id=tab_id_b)
+            info_b = await b.get_page_info(tab_id=tab_id_b)
+    else:
+        assert url_a is not None and url_b is not None
+        async with _browser_operation_lock:
+            nav_a = await b.navigate(url_a)
+            if "error" in nav_a:
+                return _error_result(nav_a["error"])
+            html_a = await b.get_html()
+            info_a = await b.get_page_info()
+
+            nav_b = await b.navigate(url_b)
+            if "error" in nav_b:
+                return _error_result(nav_b["error"])
+            html_b = await b.get_html()
+            info_b = await b.get_page_info()
+
+    content_a = extract_content(html_a)["content"]
+    content_b = extract_content(html_b)["content"]
+
+    snap_a = {"content": content_a}
+    snap_b = {"content": content_b}
+
+    from tor_mcp.browser import TorBrowser
+
+    diff = TorBrowser.diff_snapshots(snap_a, snap_b)
+
+    diff_text = diff["diff_text"]
+    budget = MAX_RESPONSE_CHARS - 500
+    if len(diff_text) > budget:
+        diff_text = diff_text[:budget] + "\n... (diff truncated)"
+
+    return _json_result({
+        "page_a": {
+            "url": info_a.get("url", ""),
+            "title": info_a.get("title", ""),
+        },
+        "page_b": {
+            "url": info_b.get("url", ""),
+            "title": info_b.get("title", ""),
+        },
+        "added_lines": diff["added_lines"],
+        "removed_lines": diff["removed_lines"],
+        "changed_sections": diff["changed_sections"],
+        "change_percentage": diff["change_percentage"],
+        "diff_text": diff_text,
+    })
 
 
 # ── Entrypoint ──────────────────────────────────────────────────

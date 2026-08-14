@@ -225,7 +225,8 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Navigation** | 4 | Move between pages and through history |
 | **Reading** | 6 | Markdown, screenshots, links, metadata, DOM queries |
 | **Interaction** | 9 | Click, type, key press, scroll, element wait, optional JS, select, batch fill, checkbox |
-| **Search and extraction** | 3 | Onion search engines and forum extraction |
+| **Search and extraction** | 4 | Onion search engines, forum extraction, and auto-pagination |
+| **Workflow** | 3 | Bounded same-origin site crawl, page monitoring, page comparison |
 | **CAPTCHA assistance** | 2 | Native image capture with optional local OCR |
 | **Tab management** | 3 | Open, close, and list browser tabs |
 | **Sessions** | 4 | Save, load, list, and delete cookie jars |
@@ -233,7 +234,7 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | **Tor control and archiving** | 4 | New circuit, circuit rotation, connection check, page snapshot |
 
 <details>
-<summary><strong>Tools (36 total) — full reference</strong></summary>
+<summary><strong>Tools (41 total) — full reference</strong></summary>
 
 <br>
 
@@ -278,6 +279,16 @@ Screenshot and CAPTCHA workflows require a client that can render native MCP ima
 | `tor_search` | Search with Ahmia, Torch, DuckDuckGo, or Haystack |
 | `tor_extract_threads` | Extract paginated forum thread listings |
 | `tor_extract_posts` | Extract paginated forum posts |
+| `tor_extract_data` | Extract structured JSON from a page using a CSS selector schema |
+| `tor_auto_paginate` | Follow "next page" links automatically and aggregate content across pages |
+
+#### Workflow
+
+| Tool | Description |
+| --- | --- |
+| `tor_crawl_site` | Crawl a site following same-origin internal links up to configurable depth and page limits |
+| `tor_monitor_page` | Take a named content snapshot and compare against the previous snapshot (baseline on first call) |
+| `tor_compare_pages` | Compare content between two browser tabs or two URLs and return a structured diff |
 
 #### CAPTCHA assistance
 

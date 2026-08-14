@@ -17,11 +17,14 @@ def test_session_imports():
 
 def test_extraction_imports():
     from tor_mcp.extraction import (
+        classify_page,
         extract_forum_posts,
         extract_forum_threads,
         extract_metadata,
         html_to_markdown,
     )
+
+    assert callable(classify_page)
 
 
 def test_server_imports():
@@ -32,7 +35,7 @@ def test_tool_count():
     from tor_mcp.server import mcp
 
     tools = mcp._tool_manager._tools
-    assert len(tools) == 36
+    assert len(tools) == 41
 
 
 def test_privacy_prefs():

@@ -1,6 +1,7 @@
 """Privacy-oriented Playwright Firefox browser routed through Tor."""
 
 import asyncio
+import difflib
 import hashlib
 import ipaddress
 import json
@@ -8,6 +9,7 @@ import logging
 import os
 import re
 import socket
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -861,6 +863,39 @@ class TorBrowser:
 
         return f"Archived to {archive_dir}"
 
+    # ── Crawl helper ──────────────────────────────────────────────
+
+    async def crawl_site(
+        self,
+        url: str,
+        *,
+        timeout: int = 60000,
+        tab_id: str | None = None,
+    ) -> dict:
+        """Navigate to *url* and return data needed for a bounded site crawl.
+
+        Combines navigation, link extraction, and content retrieval into a
+        single call used by the ``tor_crawl_site`` tool.
+
+        Returns a dict with keys ``url``, ``title``, ``html``, and ``links``
+        (list of absolute ``href`` strings) on success.  When navigation
+        fails, the dict contains ``error`` and ``url`` instead.
+        """
+        nav_result = await self.navigate(url, timeout=timeout, tab_id=tab_id)
+        if "error" in nav_result:
+            return {"error": nav_result["error"], "url": url}
+
+        html = await self.get_html(tab_id=tab_id)
+        info = await self.get_page_info(tab_id=tab_id)
+        links = await self.get_links(tab_id=tab_id)
+
+        return {
+            "url": info.get("url", url),
+            "title": info.get("title", ""),
+            "html": html,
+            "links": [link["href"] for link in links],
+        }
+
     # ── Downloads ───────────────────────────────────────────────
 
     async def download_file(
@@ -970,6 +1005,117 @@ class TorBrowser:
         # Fallback: hash-based filename.
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
         return f"download_{url_hash}"
+
+    # ── Snapshot / monitoring ──────────────────────────────────
+
+    async def snapshot_page(
+        self,
+        name: str,
+        snapshots_dir: Path,
+        *,
+        max_snapshots: int = 5,
+        tab_id: str | None = None,
+    ) -> dict:
+        """Take a content snapshot and compare against the previous one.
+
+        Stores snapshots in ``snapshots_dir / name /`` as timestamped JSON
+        files.  If a previous snapshot exists under the same *name*, a
+        unified diff is computed and returned.  Old snapshots beyond
+        *max_snapshots* are rotated out.
+        """
+        from tor_mcp.extraction import extract_content
+
+        validate_storage_name(name, kind="monitor name")
+        await self.ensure_launched()
+
+        self.get_page(tab_id)  # Validate tab exists.
+        info = await self.get_page_info(tab_id=tab_id)
+        html = await self.get_html(tab_id=tab_id)
+        extraction = extract_content(html)
+
+        snapshot = {
+            "url": info.get("url", ""),
+            "title": info.get("title", ""),
+            "content": extraction["content"],
+            "timestamp": time.time(),
+        }
+
+        # Prepare the per-name directory.
+        snap_root = snapshots_dir.resolve()  # noqa: ASYNC240
+        snap_dir = snapshots_dir / name
+        if snap_dir.is_symlink():
+            raise ValueError("Snapshot destination must not be a symlink.")
+        resolved_snap = snap_dir.resolve(strict=False)
+        if resolved_snap.parent != snap_root:
+            raise ValueError("Snapshot destination escapes the snapshots root.")
+
+        await asyncio.to_thread(_ensure_directory, snap_dir)
+
+        # Load previous snapshots (sorted oldest-first by filename).
+        existing = sorted(
+            f for f in snap_dir.iterdir()
+            if f.suffix == ".json" and not f.is_symlink()
+        )
+
+        previous: dict | None = None
+        if existing:
+            try:
+                previous = json.loads(existing[-1].read_bytes())
+            except (json.JSONDecodeError, OSError):
+                previous = None
+
+        # Write the new snapshot.
+        ts_label = str(int(snapshot["timestamp"] * 1000))
+        snap_file = snap_dir / f"{ts_label}.json"
+        await asyncio.to_thread(
+            _write_private_file,
+            snap_file,
+            json.dumps(snapshot, indent=2).encode("utf-8"),
+        )
+
+        # Rotate old snapshots.
+        existing.append(snap_file)
+        while len(existing) > max(1, max_snapshots):
+            oldest = existing.pop(0)
+            try:
+                oldest.unlink()
+            except OSError:
+                pass
+
+        if previous is None:
+            return {"status": "baseline_captured", "snapshot": snapshot}
+
+        diff = TorBrowser.diff_snapshots(previous, snapshot)
+        return {"status": "compared", "snapshot": snapshot, "diff": diff}
+
+    @staticmethod
+    def diff_snapshots(old: dict, new: dict) -> dict:
+        """Compute a structured diff between two snapshot dicts."""
+        old_lines = old.get("content", "").splitlines(keepends=True)
+        new_lines = new.get("content", "").splitlines(keepends=True)
+
+        diff_lines = list(difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile="previous", tofile="current",
+            lineterm="",
+        ))
+
+        added = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
+
+        total_lines = max(len(old_lines), len(new_lines), 1)
+        change_pct = round((added + removed) / total_lines * 100, 1)
+
+        # Count changed sections (each @@ header is a section).
+        changed_sections = sum(1 for ln in diff_lines if ln.startswith("@@"))
+
+        return {
+            "added_lines": added,
+            "removed_lines": removed,
+            "changed_sections": changed_sections,
+            "change_percentage": change_pct,
+            "diff_text": "\n".join(diff_lines),
+        }
 
     # ── Lifecycle ───────────────────────────────────────────────
 
