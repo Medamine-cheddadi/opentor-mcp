@@ -132,8 +132,8 @@ def _beautifulsoup_strategy(html: str) -> str:
 
     # Extract images with alt text
     for img in soup.find_all("img"):
-        alt = img.get("alt", "").strip()
-        src = img.get("src", "").strip()
+        alt = str(img.get("alt", "")).strip()
+        src = str(img.get("src", "")).strip()
         if alt:
             parts.append(f"![{alt}]({src})" if src else f"[Image: {alt}]")
 

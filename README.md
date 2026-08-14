@@ -10,7 +10,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Medamine-cheddadi/opentor-mcp/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white)](https://github.com/Medamine-cheddadi/opentor-mcp/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![MCP](https://img.shields.io/badge/MCP-35_tools-7C3AED?style=flat-square)](#tools)
+[![MCP](https://img.shields.io/badge/MCP-41_tools-7C3AED?style=flat-square)](#tools)
 [![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D97706?style=flat-square)](#limitations)
 
@@ -38,7 +38,7 @@ It is designed as a small, local-first side project for supervised research and 
 
 ### MCP-native
 
-35 focused tools with native image results and safety annotations — screenshots and CAPTCHAs come
+41 focused tools with native image results and safety annotations — screenshots and CAPTCHAs come
 back as real MCP image content, not base64 blobs in a text field.
 
 </td>
@@ -93,7 +93,7 @@ circuits rotate on demand.
 ```mermaid
 %%{init: {'theme':'base','fontFamily':'-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif','themeVariables':{'primaryColor':'#7C3AED','primaryTextColor':'#FFFFFF','primaryBorderColor':'#6D28D9','lineColor':'#8B5CF6','edgeLabelBackground':'#4B5563','tertiaryTextColor':'#FFFFFF','fontSize':'15px'}}}%%
 flowchart LR
-    C["MCP client"] -->|stdio| S["OpenTor MCP<br/>35 tools"]
+    C["MCP client"] -->|stdio| S["OpenTor MCP<br/>41 tools"]
     S --> G{"URL policy<br/>gate"}
     G -->|allowed| F["Playwright<br/>Firefox"]
     F --> T["Tor SOCKS5<br/>127.0.0.1:9050"]

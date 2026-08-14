@@ -191,6 +191,7 @@ class TorBrowser:
         # Auto-save state: set via enable_auto_save / disable_auto_save.
         self._auto_save_session: str | None = None
         self._auto_save_last_domain: str | None = None
+        self._auto_save_store: Any | None = None  # SessionStore, lazy to avoid circular import
 
     @property
     def page(self) -> Page:
@@ -714,18 +715,12 @@ class TorBrowser:
         if self._auto_save_last_domain and new_domain == self._auto_save_last_domain:
             return
 
-        # Import here to avoid a circular import at module level.
-        from tor_mcp.sessions import SessionStore
-
         self._auto_save_last_domain = new_domain
         cookies = await self.get_cookies()
 
-        # Use a one-off SessionStore pointed at the default storage dir.
-        # The server layer injects the real store; this is a fallback.
-        if not hasattr(self, "_auto_save_store") or self._auto_save_store is None:
+        if self._auto_save_store is None:
             return
-        store: SessionStore = self._auto_save_store
-        await store.save(
+        await self._auto_save_store.save(
             self._auto_save_session, cookies, new_url, auto_save=True,
         )
         logger.info(
