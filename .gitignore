@@ -22,6 +22,8 @@ dist/
 build/
 sessions/
 archives/
+downloads/
+snapshots/
 .env
 .env.*
 !.env.example
