@@ -518,10 +518,23 @@ async def tor_search(
     url_template = SEARCH_ENGINES.get(engine, SEARCH_ENGINES["ahmia"])
     search_url = url_template.format(query=quote_plus(query, safe=""))
 
-    nav_result = await b.navigate(search_url, timeout=60000, tab_id=tab_id)
-    html = await b.get_html(tab_id=tab_id)
-    markdown = html_to_markdown(html)
-    links = await b.get_links(tab_id=tab_id)
+    try:
+        nav_result = await b.navigate(search_url, timeout=60000, tab_id=tab_id)
+    except Exception as exc:
+        from tor_mcp.errors import classify_error
+        return _error_result({**classify_error(exc), "url": search_url})
+
+    # Check for structured navigation error (e.g. timeout with retries exhausted)
+    if "error" in nav_result:
+        return _error_result({**nav_result, "url": search_url})
+
+    try:
+        html = await b.get_html(tab_id=tab_id)
+        markdown = html_to_markdown(html)
+        links = await b.get_links(tab_id=tab_id)
+    except Exception as exc:
+        from tor_mcp.errors import classify_error
+        return _error_result({**classify_error(exc), "url": search_url})
 
     bounded_links = links[: _clamp_limit(limit)]
     result = (
@@ -788,15 +801,19 @@ async def tor_download_file(
     filename: str | None = None,
     tab_id: str | None = None,
 ) -> str:
-    result = await get_browser().download_file(
-        url,
-        DOWNLOADS_DIR,
-        filename_hint=filename,
-        max_bytes=TOR_MAX_DOWNLOAD_BYTES,
-        allowed_types=TOR_ALLOWED_DOWNLOAD_TYPES,
-        tab_id=tab_id,
-    )
-    return _json_result(result)
+    try:
+        result = await get_browser().download_file(
+            url,
+            DOWNLOADS_DIR,
+            filename_hint=filename,
+            max_bytes=TOR_MAX_DOWNLOAD_BYTES,
+            allowed_types=TOR_ALLOWED_DOWNLOAD_TYPES,
+            tab_id=tab_id,
+        )
+        return _json_result(result)
+    except Exception as exc:
+        from tor_mcp.errors import classify_error
+        return _error_result({**classify_error(exc), "url": url})
 
 
 # ── Structured extraction tool ─────────────────────────────────
@@ -947,12 +964,23 @@ async def tor_auto_paginate(
 def _normalize_crawl_url(url: str) -> str:
     """Normalize a URL for crawl deduplication.
 
-    Strips fragments and normalizes trailing slashes on the path.
+    Strips fragments, drops common non-semantic query params (like
+    ``noredirect``), and normalizes trailing slashes on the path.
     """
     url, _ = urldefrag(url)
     parsed = urlparse(url)
     path = parsed.path.rstrip("/") or "/"
-    normalized = parsed._replace(path=path, fragment="")
+    # Strip non-semantic query params that cause false-unique URLs
+    query = parsed.query
+    if query:
+        from urllib.parse import parse_qs, urlencode
+        params = parse_qs(query, keep_blank_values=True)
+        # Remove common redirect/tracking params that don't change content
+        for drop_key in ("noredirect", "redirect", "utm_source", "utm_medium",
+                         "utm_campaign", "utm_content", "utm_term", "ref"):
+            params.pop(drop_key, None)
+        query = urlencode(params, doseq=True) if params else ""
+    normalized = parsed._replace(path=path, query=query, fragment="")
     return normalized.geturl()
 
 

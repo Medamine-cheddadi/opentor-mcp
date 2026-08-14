@@ -281,6 +281,40 @@ def test_search_percent_encodes_query_and_honors_budgets(monkeypatch):
     assert result.count("https://example.com/") <= 2
 
 
+def test_search_returns_structured_error_on_navigation_failure(monkeypatch):
+    server = server_module()
+
+    class _FailingBrowser(_ReadingBrowser):
+        async def navigate(self, url, timeout=60000, **kwargs):
+            raise TimeoutError("Page.goto: Timeout 60000ms exceeded.")
+
+    monkeypatch.setattr(server, "get_browser", lambda: _FailingBrowser())
+
+    result = run(server.tor_search("test query"))
+    payload = json.loads(result)
+    assert payload["untrusted"] is False
+    assert "error" in payload
+    assert payload["error"]["category"] == "transient"
+    assert payload["error"]["retryable"] is True
+    assert "url" in payload["error"]
+
+
+def test_search_returns_structured_error_on_content_retrieval_failure(monkeypatch):
+    server = server_module()
+
+    class _ContentFailBrowser(_ReadingBrowser):
+        async def get_html(self, tab_id=None):
+            raise RuntimeError("Page.content: Unable to retrieve content")
+
+    monkeypatch.setattr(server, "get_browser", lambda: _ContentFailBrowser())
+
+    result = run(server.tor_search("test query"))
+    payload = json.loads(result)
+    assert payload["untrusted"] is False
+    assert "error" in payload
+    assert "url" in payload["error"]
+
+
 def test_search_clamps_excessive_character_and_item_budgets(monkeypatch):
     server = server_module()
     browser = _ReadingBrowser()
@@ -725,3 +759,57 @@ def test_tool_with_no_tab_id_uses_default(monkeypatch):
     run(server.tor_read_page())
 
     assert browser.html_tab_id is None
+
+
+# ── Download structured error test ───────────────────────────────
+
+
+def test_download_returns_structured_error_on_failure(monkeypatch):
+    server = server_module()
+
+    class _FailDownloadBrowser:
+        async def ensure_launched(self):
+            pass
+
+        async def download_file(self, *args, **kwargs):
+            raise ValueError("Download failed with HTTP status 404")
+
+    monkeypatch.setattr(server, "get_browser", lambda: _FailDownloadBrowser())
+
+    result = run(server.tor_download_file("https://example.onion/missing.pdf"))
+    payload = json.loads(result)
+    assert payload["untrusted"] is False
+    assert "error" in payload
+    assert payload["error"]["url"] == "https://example.onion/missing.pdf"
+
+
+# ── Crawl URL normalization test ─────────────────────────────────
+
+
+def test_crawl_url_normalization_strips_noredirect_param():
+    server = server_module()
+
+    assert server._normalize_crawl_url(
+        "https://example.com/?noredirect=1"
+    ) == server._normalize_crawl_url(
+        "https://example.com/"
+    )
+
+
+def test_crawl_url_normalization_strips_utm_params():
+    server = server_module()
+
+    assert server._normalize_crawl_url(
+        "https://example.com/page?utm_source=twitter&utm_medium=social"
+    ) == server._normalize_crawl_url(
+        "https://example.com/page"
+    )
+
+
+def test_crawl_url_normalization_preserves_semantic_params():
+    server = server_module()
+
+    url_a = server._normalize_crawl_url("https://example.com/search?q=tor")
+    url_b = server._normalize_crawl_url("https://example.com/search?q=vpn")
+
+    assert url_a != url_b
