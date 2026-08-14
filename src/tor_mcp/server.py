@@ -6,13 +6,14 @@ solving (vision relay + local OCR) and persistent session management.
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin
 
 from mcp.server.mcpserver.server import MCPServer
 from mcp_types import CallToolResult, ContentBlock, ImageContent, TextContent, ToolAnnotations
@@ -21,6 +22,7 @@ from tor_mcp.browser import TorBrowser
 from tor_mcp.captcha import CaptchaSolver
 from tor_mcp.errors import TRANSIENT, structured_error
 from tor_mcp.extraction import (
+    detect_pagination,
     extract_content,
     extract_forum_posts,
     extract_forum_threads,
@@ -814,6 +816,126 @@ async def tor_extract_data(
     html = await get_browser().get_html(tab_id=tab_id)
     result = extract_structured(html, schema)
     return _json_result(result, untrusted=True)
+
+
+# ── Auto-pagination tool ──────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "Follow 'next page' links automatically and aggregate content across pages. "
+        "Navigates through paginated content, extracts each page, and returns the "
+        "combined result. max_pages is required and capped at TOR_MAX_ITEM_LIMIT."
+    ),
+    annotations=NAVIGATE_OPEN,
+)
+async def tor_auto_paginate(
+    max_pages: int,
+    tab_id: str | None = None,
+) -> str:
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    max_pages = min(max_pages, MAX_ITEM_LIMIT)
+
+    b = get_browser()
+    pages_content: list[str] = []
+    visited_urls: set[str] = set()
+    content_hashes: set[str] = set()
+    total_chars = 0
+    skipped_pages = 0
+    stopped_reason: str | None = None
+
+    for page_num in range(max_pages):
+        async with _browser_operation_lock:
+            try:
+                info = await b.get_page_info(tab_id=tab_id)
+                current_url = info.get("url", "")
+
+                # Duplicate URL detection
+                if current_url in visited_urls:
+                    stopped_reason = f"Duplicate URL detected on page {page_num + 1}."
+                    break
+                visited_urls.add(current_url)
+
+                # Extract content
+                html = await b.get_html(tab_id=tab_id)
+                extraction = extract_content(html)
+                content = extraction["content"]
+
+                # Content fingerprint dedup (first 200 chars)
+                fingerprint = hashlib.sha256(content[:200].encode()).hexdigest()
+                if fingerprint in content_hashes:
+                    stopped_reason = (
+                        f"Duplicate content detected on page {page_num + 1}."
+                    )
+                    break
+                content_hashes.add(fingerprint)
+
+                # Response budget check
+                page_header = f"\n\n--- Page {page_num + 1} ({current_url}) ---\n\n"
+                page_text = page_header + content
+                if total_chars + len(page_text) > MAX_RESPONSE_CHARS:
+                    if pages_content:
+                        skipped_pages = max_pages - page_num
+                        stopped_reason = (
+                            f"Response budget exceeded. "
+                            f"{skipped_pages} page(s) skipped."
+                        )
+                        break
+                    # First page: truncate to fit
+                    remaining = MAX_RESPONSE_CHARS - total_chars
+                    page_text = page_text[:remaining]
+
+                pages_content.append(page_text)
+                total_chars += len(page_text)
+
+                # Detect next page link
+                next_url = detect_pagination(html)
+                if not next_url:
+                    break
+
+                # Resolve relative URL
+                next_url = urljoin(current_url, next_url)
+
+                # Navigate to next page (still under lock for this page)
+                if page_num < max_pages - 1:
+                    nav_result = await b.navigate(
+                        next_url, timeout=60000, tab_id=tab_id,
+                    )
+                    if "error" in nav_result:
+                        stopped_reason = (
+                            f"Navigation to page {page_num + 2} failed: "
+                            f"{nav_result['error'].get('message', 'unknown error')}. "
+                            f"Returning content collected so far."
+                        )
+                        break
+
+            except Exception as exc:
+                stopped_reason = (
+                    f"Error on page {page_num + 1}: {exc}. "
+                    f"Returning content collected so far."
+                )
+                break
+
+    if not pages_content:
+        return _error_result(
+            structured_error(
+                TRANSIENT,
+                "No pages could be extracted.",
+                "Verify the page has loaded correctly and try again.",
+                retryable=True,
+            )
+        )
+
+    result_parts = [_untrusted_notice()]
+    result_parts.append(f"[Auto-pagination: {len(pages_content)} page(s) collected]")
+    if stopped_reason:
+        result_parts.append(f"[Note: {stopped_reason}]")
+    if max_pages == len(pages_content) and not stopped_reason:
+        result_parts.append(f"[Note: max_pages limit ({max_pages}) reached.]")
+    result_parts.extend(pages_content)
+
+    return _truncate("\n".join(result_parts), MAX_RESPONSE_CHARS)
 
 
 # ── Entrypoint ──────────────────────────────────────────────────
