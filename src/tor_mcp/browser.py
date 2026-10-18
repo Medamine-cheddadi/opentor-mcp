@@ -755,7 +755,10 @@ class TorBrowser:
         from stem import Signal
         from stem.control import Controller
 
-        with Controller.from_port(port=str(self.tor_control_port)) as controller:
+        # Stem documents an int port; its unannotated "default" sentinel infers str.
+        with Controller.from_port(
+            port=self.tor_control_port,  # pyright: ignore[reportArgumentType]
+        ) as controller:
             controller.authenticate(password=self.tor_control_password)
             wait_seconds = controller.get_newnym_wait()
             if wait_seconds > 0:
