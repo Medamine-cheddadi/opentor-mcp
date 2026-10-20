@@ -46,7 +46,7 @@ ocr = [
     "ddddocr>=1.6.0,<2",
 ]
 tesseract = [
-    "Pillow>=12.0.0,<13",
+    "Pillow>=12.0.0,<14",
     "pytesseract>=0.3.13,<1",
 ]
 dev = [
